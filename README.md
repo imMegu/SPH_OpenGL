@@ -3,6 +3,8 @@ A real-time Smoothed Particle Hydrodynamics (SPH) fluid simulation powered by C+
 ![image](https://github.com/user-attachments/assets/519fe99c-ca88-4f5e-bc1e-ae67d5ad6bb1)
 > [!NOTE]
 > A particle's color changes depending on it's velocity.
+> [Quick video showcasing the app running.](https://youtu.be/x-2bFkBimAg)
+
 # Features
 - **Real-Time Fluid Simulation:** Implements SPH principles for simulating realistic fluid behaviors.
 - **Interactive Parameter Adjustments:** Leverages ImGui to allow real-time modification of particle properties, enhancing experimentation and visualization.
