@@ -6,11 +6,9 @@ A real-time Smoothed Particle Hydrodynamics (SPH) fluid simulation powered by C+
 > [Quick video showcasing the app running.](https://youtu.be/x-2bFkBimAg)
 
 # Features
-- **Real-Time Fluid Simulation:** Implements SPH principles for simulating realistic fluid behaviors.
-- **Interactive Parameter Adjustments:** Leverages ImGui to allow real-time modification of particle properties, enhancing experimentation and visualization.
-- **GPU Acceleration:** Uses OpenGL compute shaders for efficient parallel computations.
-- **Neighborhood Search:** Currently uses a naive brute-force approach, with plans to integrate Kd Trees or Spatial Hashing for optimized performance.
-- **Cross-Platform Compatibility:** Buildable on Linux, Windows, and macOS (with required dependencies).
+- **Real-Time Fluid Simulation:** 
+- **Interactive Parameter Adjustments:**
+- **GPU Acceleration:**
 ## Dependencies
 To build the executable, there are a few required dependencies:
 - GLEW
