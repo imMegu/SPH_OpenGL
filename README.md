@@ -6,9 +6,9 @@ A real-time Smoothed Particle Hydrodynamics (SPH) fluid simulation powered by C+
 > [Quick video showcasing the app running.](https://youtu.be/x-2bFkBimAg)
 
 # Features
-- **Real-Time Fluid Simulation:** 
-- **Interactive Parameter Adjustments:**
-- **GPU Acceleration:**
+- **Real-Time Fluid Simulation** 
+- **Interactive Parameter Adjustments**
+- **GPU Acceleration**
 ## Dependencies
 To build the executable, there are a few required dependencies:
 - GLEW
