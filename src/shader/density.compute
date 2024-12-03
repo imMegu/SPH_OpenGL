@@ -1,0 +1,76 @@
+#version 460 core
+
+uniform int numParticles;
+uniform float smoothingRadius;
+uniform float SpikyPow2ScalingFactor;
+#define WORKGROUP_SIZE 512
+
+layout (local_size_x = WORKGROUP_SIZE) in;  // Local workgroup size (X dimension)
+
+layout(std430, binding = 2) buffer Densities{
+    float densities[];
+};
+
+layout(std430, binding = 3) buffer PredictedPositions {
+    vec2 predictedPositions[];
+};
+
+float SpikyKernelPow2(float dst, float radius)
+{
+	if (dst < radius)
+	{
+		float v = radius - dst;
+		return v * v * SpikyPow2ScalingFactor;
+	}
+	return 0;
+}
+
+#define hashA 73856093u
+#define hashB 19349663u
+
+void main() {
+
+
+    uint id = gl_GlobalInvocationID.x;
+    vec2 pos = predictedPositions[id];
+
+    /*    
+    uint originX = uint(pos.x / smoothingRadius);
+    uint originY = uint(pos.y / smoothingRadius);
+    float density = 0;
+    for (int oX = -1; oX <= 1; ++oX)
+    {
+        for (int oY = -1; oY <= 1; ++oY)
+        {
+            uint hash = (originX + oX) * hashA + (originY + oY) * hashB;
+            uint key = hash % numParticles;
+            uint idx = uint(cellStart[key]);
+            while (idx < numParticles)
+            {
+                uint curKey = uint(cells[idx].z);
+                if (curKey != key) break;
+                uint curHash = uint(cells[idx].y);
+                if (curHash != hash) continue;
+                uint curIdx = uint(cells[idx].x);
+                idx++;
+
+                float dst = length(predictedPositions[curIdx] - pos);
+                if (dst < smoothingRadius)
+                {
+                    density += SpikyKernelPow2(dst, smoothingRadius);
+                }
+            }
+        }
+    }
+    */
+
+    float density = 0;
+    for (int i = 0; i < numParticles; i++)
+    {
+        float dst = length(predictedPositions[i] - pos);
+        if (dst < smoothingRadius)
+            density += SpikyKernelPow2(dst, smoothingRadius);
+    }
+    
+    densities[id] = density;
+}

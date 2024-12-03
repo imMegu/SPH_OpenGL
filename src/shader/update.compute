@@ -1,0 +1,124 @@
+#version 460 core
+
+uniform int numParticles;
+uniform float deltaTime;
+uniform float smoothingRadius;
+uniform float targetDensity;
+uniform float pressureStrength;
+uniform float viscosityStrength;
+uniform float Poly6ScalingFactor;
+uniform float SpikyPow2DerivativeScalingFactor;
+#define WORKGROUP_SIZE 512
+#define boundsSize vec2(2.0, 1.0)
+#define collisionDamping 0.5
+
+layout (local_size_x = WORKGROUP_SIZE) in;  // Local workgroup size (X dimension)
+
+layout(std430, binding = 0) buffer Positions {
+    vec2 positions[];
+};
+
+layout(std430, binding = 1) buffer Velocities {
+    vec2 velocities[];
+};
+
+layout(std430, binding = 2) buffer Densities{
+    float densities[];
+};
+
+layout(std430, binding = 3) buffer PredictedPositions {
+    vec2 predictedPositions[];
+};
+
+float SmoothingKernelPoly6(float dst, float radius)
+{
+	if (dst < radius)
+	{
+		float v = radius * radius - dst * dst;
+		return v * v * v * Poly6ScalingFactor;
+	}
+	return 0;
+}
+
+float SpikyKernelPow2(float dst, float radius)
+{
+	if (dst >= radius) return 0;
+	
+    float v = radius - dst;
+	return -v * v * SpikyPow2DerivativeScalingFactor;
+}
+
+float ConvertDensityToPressure(float density)
+{
+    float densityError = density - targetDensity;
+    float pressure = densityError * pressureStrength;
+    return pressure;
+}
+
+vec2 GetRandomDir(uint id)
+{
+    float x = (sin(id * 71.01) * 500461564);
+    float y = (cos(id * 53.7) * 1023467329);
+    return vec2(x, y);
+}
+
+float CalculateSharedPressure(float densityA, float densityB)
+{
+    float pressureA = ConvertDensityToPressure(densityA);
+    float pressureB = ConvertDensityToPressure(densityB);
+    return (pressureA + pressureB) / 2;
+}
+
+void main() {
+    uint id = gl_GlobalInvocationID.x;
+    vec2 pos = positions[id];
+	vec2 vel = velocities[id];
+
+
+    // calculate pressure force and viscosity force
+    vec2 pressureForce = vec2(0, 0);  
+    vec2 viscosityForce = vec2(0, 0);
+    for (int i = 0; i < numParticles; i++)
+    {
+        if (i == id) continue;
+        vec2 offset = predictedPositions[i] - predictedPositions[id];
+        float dst = length(offset);
+        if (dst < smoothingRadius)
+        {
+            vec2 dir = offset / (dst + 0.01);
+            float density = densities[i];
+            float sharedPressure = CalculateSharedPressure(density, densities[id]);
+            pressureForce += sharedPressure * dir * SpikyKernelPow2(dst, smoothingRadius) / density;
+            viscosityForce += (velocities[i] - vel) * SmoothingKernelPoly6(dst, smoothingRadius);
+        }
+    }
+    vel += (pressureForce / densities[id]) * deltaTime + viscosityForce * viscosityStrength * deltaTime / 500;
+
+    // Update positions based on velocities
+    pos += vel * deltaTime;
+
+	if (pos.x < 10)
+    {
+        pos.x = 10;
+        vel.x *= -1 * collisionDamping;
+    }
+    else if (pos.x > 12)
+    {
+        pos.x = 12;
+        vel.x *= -1 * collisionDamping;
+    }
+    if (pos.y < 10)
+    {
+        pos.y = 10;
+        vel.y *= -1 * collisionDamping;
+    }
+    else if (pos.y > 11)
+    {
+        pos.y = 11;
+        vel.y *= -1 * collisionDamping;
+    }
+
+    positions[id] = pos;
+    velocities[id] = vel;
+    
+}

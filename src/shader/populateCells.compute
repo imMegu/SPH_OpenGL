@@ -1,0 +1,41 @@
+#version 460
+
+#define WORKGROUP_SIZE 512
+layout(local_size_x = WORKGROUP_SIZE) in;
+
+//Cell 
+//uint id; .x
+//uint hash; .y
+//uint key; .z
+
+layout(std430, binding = 3) buffer Particles {
+    vec2 predictedPositions[];
+};
+
+layout(std430, binding = 4) buffer Cells {
+    vec3 cells[];
+};
+
+layout(std430, binding = 5) buffer Start {
+    uint startCells[];
+};
+
+uniform int numParticles;
+uniform float smoothingRadius;
+#define hashA 73856093u
+#define hashB 19349663u
+
+void main() {
+    uint id = gl_GlobalInvocationID.x;
+
+    vec2 pos = predictedPositions[id];
+    uint cellX = uint(pos.x / smoothingRadius);
+    uint cellY = uint(pos.y / smoothingRadius);
+    
+    uint cellHash = (cellY * hashA) ^ (cellX * hashB);
+    uint key = cellHash & (numParticles - 1);
+
+    // Store the particle's hash and key in the cells buffer
+    cells[id] = vec3(id, cellHash, key);
+}
+

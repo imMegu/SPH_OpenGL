@@ -1,0 +1,40 @@
+#version 460
+
+#define WORKGROUP_SIZE 512
+layout(local_size_x = WORKGROUP_SIZE) in;
+
+//Cell 
+//uint id; .x
+//uint hash; .y
+//uint key; .z
+
+
+layout(std430, binding = 3) buffer Particles {
+    vec2 predictedPositions[];
+};
+
+layout(std430, binding = 4) buffer Cells {
+    vec3 cells[];
+};
+
+layout(std430, binding = 5) buffer Start {
+    uint startCells[];
+};
+
+#define hashA 73856093u 
+#define hashB 19349663u
+
+void main() {
+    uint id = gl_GlobalInvocationID.x;
+
+    uint UINTMAX = 4294967295u;
+    startCells[id] = UINTMAX;  // Initialize the startCells array to maximum value
+
+    uint key = uint(cells[id].z);
+    uint keyPrev = (id == 0) ? UINTMAX : uint(cells[id - 1].z);
+
+    if (key != keyPrev) {
+        startCells[key] = id;
+    }
+}
+
