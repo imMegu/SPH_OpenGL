@@ -1,5 +1,5 @@
 # SPH Fluid Simulator (C++ / OpenGL)
-A real-time Smoothed Particle Hydrodynamics (SPH) fluid simulation powered by C++ and OpenGL. Leverages compute shaders for high-performance parallel computing and features techniques for efficient particle-based fluid dynamics.
+A real-time Smoothed Particle Hydrodynamics (SPH) fluid simulation powered by C++ and OpenGL. Leverages compute shaders for parallel computing.
 ![image](https://github.com/user-attachments/assets/519fe99c-ca88-4f5e-bc1e-ae67d5ad6bb1)
 > [!NOTE]
 > A particle's color changes depending on it's velocity.
