@@ -1,0 +1,66 @@
+#version 460 core
+
+#define WORKGROUP_SIZE 256
+uniform int mouseActive;
+uniform float mouseX;
+uniform float mouseY;
+uniform float deltaTime;
+uniform float gravity;
+
+layout (local_size_x = WORKGROUP_SIZE) in;  // Local workgroup size (X dimension)
+
+layout(std430, binding = 0) buffer Positions {
+    vec2 positions[];
+};
+
+layout(std430, binding = 1) buffer Velocities {
+    vec2 velocities[];
+};
+
+layout(std430, binding = 2) buffer Densities{
+    float densities[];
+};
+
+layout(std430, binding = 3) buffer PredictedPositions {
+    vec2 predictedPositions[];
+};
+
+void main()
+{
+    uint id = gl_GlobalInvocationID.x;
+    
+    // Gravity
+	vec2 gravityAccel = vec2(0, -gravity/100);
+	// Input interactions modify gravity
+    float radius = 0.05;
+    float strength = 0.5;
+    if (mouseActive == 1) {
+        vec2 direction = positions[id] - vec2(mouseX, mouseY);
+        float distance = length(direction);
+        if (distance < radius) { // Influence radius
+            vec2 force = normalize(direction) * (strength / (distance + 0.01));
+            velocities[id] += force * deltaTime;
+            densities[id] = 0;
+        }
+    }
+	else if (mouseActive == 2) {
+		vec2 dir = vec2(mouseX, mouseY) - positions[id];
+		float dst = length(dir);
+		if (dst < radius)
+		{
+			vec2 dirToInput = normalize(dir);
+      float centreT = 1.0 - (dst/ radius);
+
+      vec2 attraction = dirToInput * strength * centreT * 3;
+      float dampingFactor = 1.0 - centreT;
+
+      velocities[id] = mix(velocities[id], vec2(0, 0), dampingFactor);
+
+      velocities[id] += attraction;
+      densities[id] = 0;
+		}
+	}
+    velocities[id] += gravityAccel * deltaTime;
+ 
+    predictedPositions[id] = positions[id] + velocities[id] * 1.0 / 120.0;
+}

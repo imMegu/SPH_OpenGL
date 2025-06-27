@@ -1,0 +1,160 @@
+#version 460 core
+
+uniform int numParticles;
+uniform float deltaTime;
+uniform float botX;
+uniform float botY;
+uniform float topX;
+uniform float topY;
+uniform float smoothingRadius;
+uniform float targetDensity;
+uniform float pressureStrength;
+uniform float viscosityStrength;
+uniform float Poly6ScalingFactor;
+uniform float SpikyPow2DerivativeScalingFactor;
+#define WORKGROUP_SIZE 256
+#define boundsSize vec2(2.0, 1.0)
+#define collisionDamping 0.5
+#define TOTAL_GRID_CELL_COUNT 32768
+
+layout (local_size_x = WORKGROUP_SIZE) in;  // Local workgroup size (X dimension)
+
+layout(std430, binding = 0) buffer Positions {
+    vec2 positions[];
+};
+
+layout(std430, binding = 1) buffer Velocities {
+    vec2 velocities[];
+};
+
+layout(std430, binding = 2) buffer Densities{
+    float densities[];
+};
+
+layout(std430, binding = 3) buffer PredictedPositions {
+    vec2 predictedPositions[];
+};
+
+layout(std430, binding = 4) buffer ParticleIndices {
+    uint particleIndices[];
+};
+
+layout(std430, binding = 5) buffer CellIndices {
+    uint cellIndices[];
+};
+
+layout(std430, binding = 6) buffer CellOffsets {
+    uint cellOffsets[];
+};
+
+float SmoothingKernelPoly6(float dst, float radius)
+{
+	if (dst < radius)
+	{
+		float v = radius * radius - dst * dst;
+		return v * v * v * Poly6ScalingFactor;
+	}
+	return 0;
+}
+
+float SpikyKernelPow2(float dst, float radius)
+{
+	if (dst >= radius) return 0;
+	
+  float v = radius - dst;
+  return v * v * SpikyPow2DerivativeScalingFactor;
+}
+
+float ConvertDensityToPressure(float density)
+{
+    float densityError = density - targetDensity; // Only positive pressure
+    return densityError * pressureStrength;
+}
+
+vec2 GetRandomDir(uint id)
+{
+    float x = (sin(id * 71.01));
+    float y = (cos(id * 53.7));
+    return vec2(x, y);
+}
+
+uint GetFlatCellIndex(ivec2 cellIndex)
+{
+    const uint p1 = 73856093u;
+    const uint p2 = 19349663u;
+    
+    uint n = p1 * uint(cellIndex.x) ^ p2 * uint(cellIndex.y);
+    n %= TOTAL_GRID_CELL_COUNT;
+    return n;
+}
+
+
+float CalculateSharedPressure(float densityA, float densityB)
+{
+    float pressureA = ConvertDensityToPressure(densityA);
+    float pressureB = ConvertDensityToPressure(densityB);
+    return (pressureA + pressureB) * 0.5;
+}
+
+void main() {
+    uint id = gl_GlobalInvocationID.x;
+    vec2 pos = positions[id] + (GetRandomDir(id) * 0.001 * smoothingRadius);
+  	vec2 vel = velocities[id];
+
+
+    // calculate pressure force and viscosity force
+    vec2 pressureForce = vec2(0, 0);  
+    vec2 viscosityForce = vec2(0, 0);
+    
+    ivec2 cellIndex = ivec2(floor(predictedPositions[id] / smoothingRadius));
+    
+    // Check 3x3 grid of cells around particle
+    for (int i = -1; i <= 1; ++i) {
+        for (int j = -1; j <= 1; ++j) {
+            ivec2 neighborIndex = cellIndex + ivec2(i, j);
+            uint flatNeighborIndex = GetFlatCellIndex(neighborIndex);
+            
+            uint neighborIterator = cellOffsets[flatNeighborIndex];
+            
+            while (neighborIterator != 0xFFFFFFFF && neighborIterator < numParticles) {
+                uint particleIndexB = particleIndices[neighborIterator];
+                
+                if (cellIndices[neighborIterator] != flatNeighborIndex) {
+                    break; // Stepped out of neighbor cell
+                }
+                
+                if (particleIndexB == id) {
+                    neighborIterator++;
+                    continue;
+                }
+                
+                vec2 offset = predictedPositions[particleIndexB] - predictedPositions[id];
+                float dst = length(offset);
+                if (dst < smoothingRadius && dst > 0.0001)  
+                {
+                    vec2 dir = offset / dst;
+                    float density = densities[particleIndexB];
+                    float sharedPressure = CalculateSharedPressure(density, densities[id]);
+                    pressureForce += sharedPressure * dir * SpikyKernelPow2(dst, smoothingRadius) / density;
+                    viscosityForce += (velocities[particleIndexB] - vel) * SmoothingKernelPoly6(dst, smoothingRadius);
+                }
+                
+                neighborIterator++;
+            }
+        }
+    }
+    
+    vel += (pressureForce / densities[id]) * deltaTime + viscosityForce * viscosityStrength * deltaTime / 500;
+
+    // Update positions based on velocities
+    pos += vel * deltaTime; 
+
+    pos.x = clamp(pos.x, botX, topX);
+    pos.y = clamp(pos.y, botY, topY);
+    if (pos.x <= botX || pos.x >= topX) vel.x *= -collisionDamping;
+    if (pos.y <= botY || pos.y >= topY) vel.y *= -collisionDamping;
+
+    positions[id] = pos;
+    velocities[id] = vel;
+    
+}
