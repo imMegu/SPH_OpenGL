@@ -1,0 +1,41 @@
+#version 460 core
+
+uniform int numParticles;
+uniform int stage;
+uniform int step;
+#define WORKGROUP_SIZE 256
+
+layout (local_size_x = WORKGROUP_SIZE) in;
+
+layout(std430, binding = 4) buffer ParticleIndices {
+    uint particleIndices[];
+};
+
+layout(std430, binding = 5) buffer CellIndices {
+    uint cellIndices[];
+};
+
+void main() {
+    uint id = gl_GlobalInvocationID.x;
+    if (id >= numParticles) return;
+
+    uint partner = id ^ step;
+    if (partner > id && partner < numParticles) {
+        uint cellA = cellIndices[id];
+        uint cellB = cellIndices[partner];
+        
+        bool ascending = ((id & stage) == 0);
+        bool swap = (cellA > cellB) == ascending;
+        
+        if (swap) {
+            // Swap cell indices
+            cellIndices[id] = cellB;
+            cellIndices[partner] = cellA;
+            
+            // Swap particle indices
+            uint tempParticle = particleIndices[id];
+            particleIndices[id] = particleIndices[partner];
+            particleIndices[partner] = tempParticle;
+        }
+    }
+}
