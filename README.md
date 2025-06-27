@@ -17,7 +17,7 @@ This project uses CMake to generate build files.
 Example of building in linux:
 ```
 # Clone the repository
-git clone https://github.com/your-repo/sph-fluid-simulator.git
+git clone https://github.com/imMegu/SPH_OpenGL.git
 cd SPH_OpenGL
 
 # Create and navigate to the build directory
