@@ -1,0 +1,28 @@
+#version 430 core
+
+uniform int numParticles;
+#define WORKGROUP_SIZE 256
+
+layout (local_size_x = WORKGROUP_SIZE) in;
+
+layout(std430, binding = 4) buffer ParticleIndices {
+    uint particleIndices[];
+};
+
+layout(std430, binding = 5) buffer CellIndices {
+    uint cellIndices[];
+};
+
+layout(std430, binding = 6) buffer CellOffsets {
+    uint cellOffsets[];
+};
+
+void main() {
+    uint id = gl_GlobalInvocationID.x;
+    if (id >= numParticles) return;
+
+    uint particleIndex = particleIndices[id];
+    uint cellIndex = cellIndices[id];
+    
+    atomicMin(cellOffsets[cellIndex], id);
+}

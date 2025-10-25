@@ -20,6 +20,9 @@ Example of building in linux:
 git clone https://github.com/imMegu/SPH_OpenGL.git
 cd SPH_OpenGL
 
+# Choose 2D or 3D
+cd 3D
+
 # Create and navigate to the build directory
 mkdir build && cd build
 
@@ -37,7 +40,7 @@ Once compiled, you can run the simulator with:
 ```
 # Neighborhood Search
 SPH simulation calculates particle properties based on **neighboring particles** within an influence radius.
-The naive approach is to "brute force" these calculations by, ```for each particle, iterating through every other particle, and only then determine if they are inside the particle's influence radius.``` This turns out to be a ```O(n^2)``` algorithm, which scales very poorly when more particles are added.
+The naive approach is to "brute force" these calculations by, ```for each particle, iterating through every other particle, and only then determine if they are inside the particle's influence radius.``` This turns out to be a ```O(n^2)``` algorithm, which scales very poorly when more particles are added.  
 This implementation utilizes the Spatial Hashing technique by Nvidia as described in this paper https://web.archive.org/web/20140725014123/https://docs.nvidia.com/cuda/samples/5_Simulations/particles/doc/particles.pdf, which improves particle lookup to ```O(nlogn)``` with Bitonic Merge Sort and ```O(n)``` with Radix Sort (Worst case is still ```O(n^2)``` when all particles lie in the same cell). The sorting algorithm I chose is Bitonic Merge Sort, although I plan to switch to Radix Sort in the future for better efficiency.
 # Roadmap
 - **Improve Memory Efficiency:** Optimize GPU memory usage and data transfer.

@@ -1,0 +1,97 @@
+#version 430 core
+
+uniform int numParticles;
+uniform float smoothingRadius;
+uniform float SpikyPow2ScalingFactor;
+#define WORKGROUP_SIZE 256
+#define TOTAL_GRID_CELL_COUNT 262144
+
+layout (local_size_x = WORKGROUP_SIZE) in;
+
+layout(std430, binding = 2) buffer Densities{
+    float densities[];
+};
+
+layout(std430, binding = 3) buffer PredictedPositions {
+    vec4 predictedPositions[];
+};
+
+layout(std430, binding = 4) buffer ParticleIndices {
+    uint particleIndices[];
+};
+
+layout(std430, binding = 5) buffer CellIndices {
+    uint cellIndices[];
+};
+
+layout(std430, binding = 6) buffer CellOffsets {
+    uint cellOffsets[];
+};
+
+uint GetFlatCellIndex(ivec4 cellIndex)
+{
+    const uint OFFSET = 1024u;
+    uint x = uint(cellIndex.x + OFFSET);
+    uint y = uint(cellIndex.y + OFFSET); 
+    uint z = uint(cellIndex.z + OFFSET);
+    
+    const uint p1 = 73856093u;
+    const uint p2 = 19349663u;
+    const uint p3 = 83492791u;
+    
+    uint hash = p1 * x + p2 * y + p3 * z;
+    return hash % TOTAL_GRID_CELL_COUNT;
+}
+
+float SpikyKernelPow2(float dst, float radius)
+{
+    if (dst < radius)
+    {
+        float v = radius - dst;
+        return v * v * SpikyPow2ScalingFactor;
+    }
+    return 0;
+}
+
+void main() {
+    uint id = gl_GlobalInvocationID.x;
+    if (id >= numParticles) return;
+
+    vec4 pos = predictedPositions[id];
+    float density = 0;
+    
+    ivec4 cellIndex = ivec4(floor(pos.xyz / smoothingRadius), 0);  // Only use xyz for cell calculation
+    
+    // Check 3x3x3 grid of cells around particle
+    for (int i = -1; i <= 1; ++i) {
+        for (int j = -1; j <= 1; ++j) {
+            for (int k = -1; k <= 1; ++k) {
+                ivec4 neighborIndex = cellIndex + ivec4(i, j, k, 0);
+                uint flatNeighborIndex = GetFlatCellIndex(neighborIndex);
+                
+                uint neighborIterator = cellOffsets[flatNeighborIndex];
+                
+                // Add safety check for iterator bounds
+                while (neighborIterator != 0xFFFFFFFF && neighborIterator < numParticles) {
+                    uint particleIndexB = particleIndices[neighborIterator];
+                    
+                    // Ensure particleIndexB is valid
+                    if (particleIndexB >= numParticles) break;
+                    
+                    if (cellIndices[neighborIterator] != flatNeighborIndex) {
+                        break; // Stepped out of neighbor cell
+                    }
+                    
+                    float dst = length(predictedPositions[particleIndexB].xyz - pos.xyz);  // Use only xyz
+                    if (dst < smoothingRadius) {
+                        density += SpikyKernelPow2(dst, smoothingRadius);
+                    }
+                    
+                    neighborIterator++;
+                }
+            } 
+        }
+    }
+    
+    densities[id] = density;
+}
