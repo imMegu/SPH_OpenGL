@@ -1,0 +1,214 @@
+#version 430 core
+
+uniform int numParticles;
+uniform float deltaTime;
+uniform float botX;
+uniform float botY;
+uniform float topX;
+uniform float topY;
+uniform float botZ;
+uniform float topZ;
+uniform float smoothingRadius;
+uniform float targetDensity;
+uniform float pressureStrength;
+uniform float viscosityStrength;
+uniform float Poly6ScalingFactor;
+uniform float SpikyPow2DerivativeScalingFactor;
+#define WORKGROUP_SIZE 256
+#define collisionDamping 0.2
+#define TOTAL_GRID_CELL_COUNT 262144
+
+uniform mat4 boxTransform;
+uniform mat4 boxTransformInverse;
+
+layout (local_size_x = WORKGROUP_SIZE) in;
+
+layout(std430, binding = 0) buffer Positions {
+    vec4 positions[];
+};
+
+layout(std430, binding = 1) buffer Velocities {
+    vec4 velocities[];
+};
+
+layout(std430, binding = 2) buffer Densities{
+    float densities[];
+};
+
+layout(std430, binding = 3) buffer PredictedPositions {
+    vec4 predictedPositions[];
+};
+
+layout(std430, binding = 4) buffer ParticleIndices {
+    uint particleIndices[];
+};
+
+layout(std430, binding = 5) buffer CellIndices {
+    uint cellIndices[];
+};
+
+layout(std430, binding = 6) buffer CellOffsets {
+    uint cellOffsets[];
+};
+
+float SmoothingKernelPoly6(float dst, float radius)
+{
+    if (dst < radius)
+    {
+        float v = radius * radius - dst * dst;
+        return v * v * v * Poly6ScalingFactor;
+    }
+    return 0;
+}
+
+float SpikyKernelPow2(float dst, float radius)
+{
+    if (dst >= radius) return 0;
+    
+    float v = radius - dst;
+    return v * v * SpikyPow2DerivativeScalingFactor;
+}
+
+float ConvertDensityToPressure(float density)
+{
+    float densityError = density - targetDensity;
+    return densityError * pressureStrength;
+}
+
+vec4 GetRandomDir(uint id)
+{
+    float x = (sin(id * 71.01));
+    float y = (cos(id * 53.7));
+    float z = (sin(id * 21.03));
+    return vec4(x, y, z, 0.0);  // Ensure w=0 for directions
+}
+
+uint GetFlatCellIndex(ivec4 cellIndex)
+{
+    const uint OFFSET = 1024u;
+    uint x = uint(cellIndex.x + OFFSET);
+    uint y = uint(cellIndex.y + OFFSET); 
+    uint z = uint(cellIndex.z + OFFSET);
+    
+    const uint p1 = 73856093u;
+    const uint p2 = 19349663u;
+    const uint p3 = 83492791u;
+    
+    uint hash = p1 * x + p2 * y + p3 * z;
+    return hash % TOTAL_GRID_CELL_COUNT;
+}
+
+float CalculateSharedPressure(float densityA, float densityB)
+{
+    float pressureA = ConvertDensityToPressure(densityA);
+    float pressureB = ConvertDensityToPressure(densityB);
+    return (pressureA + pressureB) * 0.5;
+}
+
+void main() {
+    uint id = gl_GlobalInvocationID.x;
+    if (id >= numParticles) return;
+    
+    vec4 pos = positions[id]; 
+    vec4 vel = velocities[id];
+    
+    // Calculate pressure force and viscosity force
+    vec4 pressureForce = vec4(0.0, 0.0, 0.0, 0.0);  
+    vec4 viscosityForce = vec4(0.0, 0.0, 0.0, 0.0);
+
+    ivec4 cellIndex = ivec4(floor(predictedPositions[id] / smoothingRadius));
+    
+    // Check 3x3x3 grid of cells around particle
+    for (int i = -1; i <= 1; ++i) {
+        for (int j = -1; j <= 1; ++j) {
+            for (int k = -1; k <= 1; ++k) {  // Fixed: was k++ instead of ++k
+                ivec4 neighborIndex = cellIndex + ivec4(i, j, k, 0);  // Added w=0
+                uint flatNeighborIndex = GetFlatCellIndex(neighborIndex);
+                
+                uint neighborIterator = cellOffsets[flatNeighborIndex];
+                
+                while (neighborIterator != 0xFFFFFFFF && neighborIterator < numParticles) {
+                    uint particleIndexB = particleIndices[neighborIterator];
+                    
+                    // Add bounds check
+                    if (particleIndexB >= numParticles) break;
+                    
+                    if (cellIndices[neighborIterator] != flatNeighborIndex) {
+                        break; // Stepped out of neighbor cell
+                    }
+                    
+                    if (particleIndexB == id) {
+                        neighborIterator++;
+                        continue;
+                    }
+                    
+                    vec4 offset = predictedPositions[particleIndexB] - predictedPositions[id];
+                    float dst = length(offset.xyz);  // Use only xyz for distance
+                    if (dst < smoothingRadius && dst > 0.0001)  
+                    {
+                        vec4 dir = vec4(normalize(offset.xyz), 0.0);  // Normalize only xyz, w=0
+                        float density = densities[particleIndexB];
+                        float sharedPressure = CalculateSharedPressure(density, densities[id]);
+                        pressureForce += sharedPressure * dir * SpikyKernelPow2(dst, smoothingRadius) / density;
+                        viscosityForce += (velocities[particleIndexB] - vel) * SmoothingKernelPoly6(dst, smoothingRadius);
+                    }
+                    
+                    neighborIterator++;
+                }
+            }
+        }
+    }
+    
+    vel += (pressureForce / densities[id]) * deltaTime + viscosityForce * viscosityStrength * deltaTime / 500;
+    
+    // Update positions based on velocities
+    pos.xyz += vel.xyz * deltaTime;  // Only update xyz components
+    pos.w = 1.0;  // Keep w=1 for positions
+    
+    vec4 oldPos = pos - vel * deltaTime; // Position before this frame
+
+    vec4 localPos = boxTransformInverse * pos;
+    vec4 localVel = boxTransformInverse * vel;
+
+    // Handle X boundaries in local space
+    if (localPos.x <= botX) {
+        float penetration = botX - localPos.x;
+        localPos.x = botX + penetration; 
+        localVel.x = abs(localVel.x) * collisionDamping; 
+    } else if (localPos.x >= topX) {
+        float penetration = localPos.x - topX;
+        localPos.x = topX - penetration;
+        localVel.x = -abs(localVel.x) * collisionDamping;
+    }
+
+    // Handle Y boundaries in local space
+    if (localPos.y <= botY) {
+        float penetration = botY - localPos.y;
+        localPos.y = botY + penetration;
+        localVel.y = abs(localVel.y) * collisionDamping;
+    } else if (localPos.y >= topY) {
+        float penetration = localPos.y - topY;
+        localPos.y = topY - penetration;
+        localVel.y = -abs(localVel.y) * collisionDamping;
+    }
+
+    // Handle Z boundaries in local space
+    if (localPos.z <= botZ) {
+        float penetration = botZ - localPos.z;
+        localPos.z = botZ + penetration;
+        localVel.z = abs(localVel.z) * collisionDamping;
+    } else if (localPos.z >= topZ) {
+        float penetration = localPos.z - topZ;
+        localPos.z = topZ - penetration;
+        localVel.z = -abs(localVel.z) * collisionDamping;
+    }
+    
+    // Transform the final position and velocity back to world space
+    pos = boxTransform * localPos;
+    vel = boxTransform * localVel;
+
+    vel.w = 0.0;
+
+    positions[id] = pos;
+    velocities[id] = vel;
+}
