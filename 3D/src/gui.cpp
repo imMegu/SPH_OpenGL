@@ -58,6 +58,8 @@ void renderGUI() {
   ImGui::SliderFloat("Sphere Radius", &sphereRadius, 0.1f, 5.0f);
   ImGui::SliderFloat("Bounds Speed", &boundSpeed, 0.1f, 5.0f);
   ImGui::Checkbox("Single Axis", &singleAxis);
+  ImGui::Checkbox("Water Shading", &waterRendering);
+  ImGui::SliderFloat("Absorption", &waterAbsorption, 0.0f, 20.0f);
   ImGui::End();
   ImGui::Render();
   ImGui_ImplOpenGL3_RenderDrawData(ImGui::GetDrawData());

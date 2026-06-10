@@ -1,0 +1,53 @@
+#version 430 core
+
+// Scatters each particle's data into cell-sorted order so the neighbor loops
+// in the density/update passes read contiguous memory (NVIDIA particles
+// sample: "reorder data and find cell start"). The atomic on the cell cursor
+// hands out unique slots; once every particle has been placed, cellEnd holds
+// each cell's end index.
+
+uniform int numParticles;
+
+layout (local_size_x = WORKGROUP_SIZE) in;
+
+layout(std430, binding = 0) buffer Positions {
+    vec4 positions[];
+};
+
+layout(std430, binding = 1) buffer Velocities {
+    vec4 velocities[];
+};
+
+layout(std430, binding = 3) buffer PredictedPositions {
+    vec4 predictedPositions[];
+};
+
+layout(std430, binding = 4) buffer CellIndices {
+    uint cellIndices[];
+};
+
+layout(std430, binding = 5) buffer SortedPredicted {
+    vec4 sortedPredicted[];
+};
+
+layout(std430, binding = 8) buffer CellCursor {
+    uint cellCursor[];
+};
+
+layout(std430, binding = 9) buffer SortedPositions {
+    vec4 sortedPositions[];
+};
+
+layout(std430, binding = 10) buffer SortedVelocities {
+    vec4 sortedVelocities[];
+};
+
+void main() {
+    uint id = gl_GlobalInvocationID.x;
+    if (id >= numParticles) return;
+
+    uint dst = atomicAdd(cellCursor[cellIndices[id]], 1u);
+    sortedPredicted[dst] = predictedPositions[id];
+    sortedPositions[dst] = positions[id];
+    sortedVelocities[dst] = velocities[id];
+}

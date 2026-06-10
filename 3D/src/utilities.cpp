@@ -38,38 +38,36 @@ void createStorageBuffer(GLuint *buffer, GLuint binding, GLsizeiptr size,
 }
 } // namespace
 
-void createParticleBuffers(GLuint *posBuffer, GLuint *velBuffer,
-                           GLuint *densityBuffer, GLuint *nearDensityBuffer,
-                           GLuint *predBuffer, GLuint *particleIndexBuffer,
-                           GLuint *cellIndexBuffer) {
+void createParticleBuffers(ParticleBuffers *buffers) {
   std::vector<glm::vec4> positions(numParticles);
   std::vector<glm::vec4> velocities(numParticles, glm::vec4(0.0f));
-  std::vector<uint32_t> particleIndices(numParticles);
   std::vector<float> zeros(numParticles, 0.0f);
-  for (int i = 0; i < numParticles; ++i) {
+  for (int i = 0; i < numParticles; ++i)
     positions[i] = genRandomVector3d();
-    particleIndices[i] = i;
-  }
 
   GLsizeiptr vec4Size = numParticles * sizeof(glm::vec4);
   GLsizeiptr uintSize = numParticles * sizeof(uint32_t);
   GLsizeiptr floatSize = numParticles * sizeof(float);
 
-  createStorageBuffer(posBuffer, 0, vec4Size, positions.data());
-  createStorageBuffer(velBuffer, 1, vec4Size, velocities.data());
-  createStorageBuffer(densityBuffer, 2, floatSize, zeros.data());
+  createStorageBuffer(&buffers->positions, 0, vec4Size, positions.data());
+  createStorageBuffer(&buffers->velocities, 1, vec4Size, velocities.data());
+  createStorageBuffer(&buffers->densities, 2, floatSize, zeros.data());
   // overwritten by the external-forces pass before first use
-  createStorageBuffer(predBuffer, 3, vec4Size, positions.data());
-  createStorageBuffer(particleIndexBuffer, 4, uintSize,
-                      particleIndices.data());
-  createStorageBuffer(cellIndexBuffer, 5, uintSize, nullptr);
-  createStorageBuffer(nearDensityBuffer, 7, floatSize, zeros.data());
+  createStorageBuffer(&buffers->predicted, 3, vec4Size, positions.data());
+  createStorageBuffer(&buffers->cellIndices, 4, uintSize, nullptr);
+  createStorageBuffer(&buffers->sortedPredicted, 5, vec4Size, nullptr);
+  createStorageBuffer(&buffers->nearDensities, 7, floatSize, zeros.data());
+  createStorageBuffer(&buffers->sortedPositions, 9, vec4Size, nullptr);
+  createStorageBuffer(&buffers->sortedVelocities, 10, vec4Size, nullptr);
 }
 
-void createGridBuffer(GLuint *cellOffsetBuffer) {
-  // contents are cleared at the start of every simulation step
-  createStorageBuffer(cellOffsetBuffer, 6,
-                      GRID_CELL_CAPACITY * sizeof(uint32_t), nullptr);
+void deleteParticleBuffers(ParticleBuffers *buffers) {
+  GLuint ids[] = {buffers->positions,       buffers->velocities,
+                  buffers->densities,       buffers->predicted,
+                  buffers->cellIndices,     buffers->sortedPredicted,
+                  buffers->nearDensities,   buffers->sortedPositions,
+                  buffers->sortedVelocities};
+  glDeleteBuffers(9, ids);
 }
 
 void setupCubeBuffers(GLuint *cubeVAO, GLuint *cubeVBO, GLuint *cubeEBO) {
@@ -107,8 +105,8 @@ void updateCubeBounds(GLuint cubeVBO) {
                   &newCubeVertices[0]);
 }
 
-void setupQuadBuffers(GLuint *quadVAO, GLuint *quadVBO, GLuint *posBuffer,
-                      GLuint *velBuffer) {
+void setupQuadBuffers(GLuint *quadVAO, GLuint *quadVBO, GLuint posBuffer,
+                      GLuint velBuffer) {
   glGenVertexArrays(1, quadVAO);
   glGenBuffers(1, quadVBO);
 
@@ -123,13 +121,13 @@ void setupQuadBuffers(GLuint *quadVAO, GLuint *quadVBO, GLuint *posBuffer,
   glVertexAttribDivisor(0, 0); // Per vertex
 
   // Instance data - positions (per instance)
-  glBindBuffer(GL_ARRAY_BUFFER, *posBuffer);
+  glBindBuffer(GL_ARRAY_BUFFER, posBuffer);
   glVertexAttribPointer(1, 4, GL_FLOAT, GL_FALSE, sizeof(glm::vec4), (void *)0);
   glEnableVertexAttribArray(1);
   glVertexAttribDivisor(1, 1); // Per instance
 
   // Instance data - velocities (per instance)
-  glBindBuffer(GL_ARRAY_BUFFER, *velBuffer);
+  glBindBuffer(GL_ARRAY_BUFFER, velBuffer);
   glVertexAttribPointer(2, 4, GL_FLOAT, GL_FALSE, sizeof(glm::vec4), (void *)0);
   glEnableVertexAttribArray(2);
   glVertexAttribDivisor(2, 1); // Per instance

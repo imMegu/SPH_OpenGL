@@ -58,11 +58,14 @@ with `GL_TIME_ELAPSED` queries.
 # Neighborhood Search
 SPH simulation calculates particle properties based on **neighboring particles** within an influence radius.
 The naive approach is to "brute force" these calculations by, ```for each particle, iterating through every other particle, and only then determine if they are inside the particle's influence radius.``` This turns out to be a ```O(n^2)``` algorithm, which scales very poorly when more particles are added.
-This implementation follows the particle-grid approach described in Nvidia's paper https://web.archive.org/web/20140725014123/https://docs.nvidia.com/cuda/samples/5_Simulations/particles/doc/particles.pdf: particles are binned into grid cells, sorted by cell index with a GPU Bitonic Merge Sort (using shared memory for the steps that fit inside a workgroup), and looked up through a per-cell offset table.
-- The **3D version** uses a dense uniform grid over the simulation box, sized each frame from the box bounds and smoothing radius. Cells are indexed directly, so there are no hash collisions.
-- The **2D version** uses the spatial hashing variant from the paper.
+This implementation follows the particle-grid approach described in Nvidia's paper https://web.archive.org/web/20140725014123/https://docs.nvidia.com/cuda/samples/5_Simulations/particles/doc/particles.pdf.
+- The **3D version** uses a dense uniform grid over the simulation box (sized each frame from the box bounds and smoothing radius; no hash collisions) and an O(n) GPU **counting sort**: a per-cell atomic histogram, a parallel exclusive prefix sum (which doubles as the cell-start table), and a scatter pass that reorders the particle data itself into cell order, so the neighbor loops read contiguous, coalesced memory.
+- The **2D version** uses the spatial hashing + Bitonic Merge Sort variant from the paper.
 
 The 3D version also adds a near-pressure term (Clavet et al., "Particle-based Viscoelastic Fluid Simulation") to prevent particle clumping.
+
+Rendering uses screen-space fluid rendering (van der Laan et al.): sphere-impostor depth, a separable bilateral blur, normals reconstructed from the smoothed depth, and compositing with refraction, Beer-Lambert absorption, and a Fresnel-weighted sky reflection. The "Water Shading" checkbox switches between this and a plain shaded-impostor view.
+
+See [sources.md](sources.md) for the papers behind each technique.
 # Roadmap
-- **Counting sort + data reorder:** Replace the bitonic sort with an O(n) counting sort and scatter the particle data into cell order for coalesced memory access (the density/update passes dominate the frame time).
-- **Visual Enhancements:** Add shaders for realistic fluid rendering (e.g., reflections, refractions).
+- **Visual Enhancements:** Environment-map reflections, foam/spray particles.

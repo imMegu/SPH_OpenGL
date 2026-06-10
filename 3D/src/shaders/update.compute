@@ -38,24 +38,28 @@ layout(std430, binding = 2) buffer Densities{
     float densities[];
 };
 
-layout(std430, binding = 3) buffer PredictedPositions {
-    vec4 predictedPositions[];
+layout(std430, binding = 5) buffer SortedPredicted {
+    vec4 sortedPredicted[];
 };
 
-layout(std430, binding = 4) buffer ParticleIndices {
-    uint particleIndices[];
-};
-
-layout(std430, binding = 5) buffer CellIndices {
-    uint cellIndices[];
-};
-
-layout(std430, binding = 6) buffer CellOffsets {
-    uint cellOffsets[];
+layout(std430, binding = 6) buffer CellStart {
+    uint cellStart[];
 };
 
 layout(std430, binding = 7) buffer NearDensities {
     float nearDensities[];
+};
+
+layout(std430, binding = 8) buffer CellEnd {
+    uint cellEnd[];
+};
+
+layout(std430, binding = 9) buffer SortedPositions {
+    vec4 sortedPositions[];
+};
+
+layout(std430, binding = 10) buffer SortedVelocities {
+    vec4 sortedVelocities[];
 };
 
 float SmoothingKernelPoly6(float dst, float radius)
@@ -110,8 +114,11 @@ void main() {
     uint id = gl_GlobalInvocationID.x;
     if (id >= numParticles) return;
 
-    vec4 pos = positions[id];
-    vec4 vel = velocities[id];
+    // All inputs are in cell-sorted order (scattered there earlier this
+    // frame), so neighbor reads are contiguous
+    vec4 pos = sortedPositions[id];
+    vec4 vel = sortedVelocities[id];
+    vec4 predicted = sortedPredicted[id];
     float density = densities[id];
     float nearDensity = nearDensities[id];
 
@@ -119,8 +126,8 @@ void main() {
     vec4 pressureForce = vec4(0.0, 0.0, 0.0, 0.0);
     vec4 viscosityForce = vec4(0.0, 0.0, 0.0, 0.0);
 
-    ivec3 cellCoord = GetCellCoord(predictedPositions[id].xyz, gridMin,
-                                   smoothingRadius, gridDims);
+    ivec3 cellCoord = GetCellCoord(predicted.xyz, gridMin, smoothingRadius,
+                                   gridDims);
 
     // Check 3x3x3 grid of cells around particle
     for (int i = -1; i <= 1; ++i) {
@@ -130,28 +137,18 @@ void main() {
                 if (any(lessThan(neighborCoord, ivec3(0))) ||
                     any(greaterThanEqual(neighborCoord, gridDims)))
                     continue;
-                uint flatNeighborIndex = GetFlatCellIndex(neighborCoord, gridDims);
+                uint cell = GetFlatCellIndex(neighborCoord, gridDims);
 
-                uint neighborIterator = cellOffsets[flatNeighborIndex];
+                for (uint n = cellStart[cell]; n < cellEnd[cell]; n++) {
+                    if (n == id) continue; // self
 
-                while (neighborIterator != 0xFFFFFFFF && neighborIterator < numParticles) {
-                    if (cellIndices[neighborIterator] != flatNeighborIndex) {
-                        break; // Stepped out of neighbor cell
-                    }
-                    uint particleIndexB = particleIndices[neighborIterator];
-
-                    if (particleIndexB == id) {
-                        neighborIterator++;
-                        continue;
-                    }
-
-                    vec4 offset = predictedPositions[particleIndexB] - predictedPositions[id];
+                    vec4 offset = sortedPredicted[n] - predicted;
                     float dst = length(offset.xyz);
                     if (dst < smoothingRadius && dst > 0.0001)
                     {
                         vec4 dir = vec4(normalize(offset.xyz), 0.0);
-                        float densityB = densities[particleIndexB];
-                        float nearDensityB = nearDensities[particleIndexB];
+                        float densityB = densities[n];
+                        float nearDensityB = nearDensities[n];
 
                         float sharedPressure = CalculateSharedPressure(densityB, density);
                         float sharedNearPressure =
@@ -161,11 +158,9 @@ void main() {
                             (SpikyKernelPow2Derivative(dst, smoothingRadius) * sharedPressure / densityB
                            + SpikyKernelPow3Derivative(dst, smoothingRadius) * sharedNearPressure / nearDensityB);
 
-                        viscosityForce += (velocities[particleIndexB] - vel) *
+                        viscosityForce += (sortedVelocities[n] - vel) *
                             (SmoothingKernelPoly6(dst, smoothingRadius) / densityB);
                     }
-
-                    neighborIterator++;
                 }
             }
         }
@@ -220,6 +215,8 @@ void main() {
 
     vel.w = 0.0;
 
+    // Write back at the sorted index: the sorted order becomes next frame's
+    // particle order (instanced rendering doesn't care about order)
     positions[id] = pos;
     velocities[id] = vel;
 }

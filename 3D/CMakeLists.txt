@@ -21,6 +21,7 @@ set(IMGUI_DIR include/imgui-master)
 add_executable(execute
     src/main.cpp
     src/gui.cpp
+    src/renderer.cpp
     src/shader.cpp
     src/simulation.cpp
     src/utilities.cpp

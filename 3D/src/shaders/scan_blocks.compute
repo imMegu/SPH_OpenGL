@@ -1,0 +1,69 @@
+#version 430 core
+
+// Each workgroup runs a Blelloch work-efficient exclusive scan over one block
+// of SCAN_BLOCK cell counts in shared memory (GPU Gems 3, chapter 39), and
+// writes its block total to blockSums for the second scan level.
+#define SCAN_BLOCK (WORKGROUP_SIZE * 2)
+
+uniform int numCells;
+
+layout (local_size_x = WORKGROUP_SIZE) in;
+
+layout(std430, binding = 8) buffer CellCounts {
+    uint cellCounts[];
+};
+
+layout(std430, binding = 6) buffer CellStart {
+    uint cellStart[];
+};
+
+layout(std430, binding = 11) buffer BlockSums {
+    uint blockSums[];
+};
+
+shared uint temp[SCAN_BLOCK];
+
+void main() {
+    uint t = gl_LocalInvocationID.x;
+    uint blockStart = gl_WorkGroupID.x * SCAN_BLOCK;
+    uint i0 = blockStart + 2u * t;
+    uint i1 = blockStart + 2u * t + 1u;
+
+    temp[2u * t]      = (i0 < uint(numCells)) ? cellCounts[i0] : 0u;
+    temp[2u * t + 1u] = (i1 < uint(numCells)) ? cellCounts[i1] : 0u;
+
+    // Up-sweep (reduce)
+    uint offset = 1u;
+    for (uint d = uint(SCAN_BLOCK) >> 1; d > 0u; d >>= 1) {
+        barrier();
+        if (t < d) {
+            uint ai = offset * (2u * t + 1u) - 1u;
+            uint bi = offset * (2u * t + 2u) - 1u;
+            temp[bi] += temp[ai];
+        }
+        offset <<= 1;
+    }
+
+    barrier();
+    if (t == 0u) {
+        blockSums[gl_WorkGroupID.x] = temp[SCAN_BLOCK - 1];
+        temp[SCAN_BLOCK - 1] = 0u;
+    }
+
+    // Down-sweep
+    for (uint d = 1u; d < uint(SCAN_BLOCK); d <<= 1) {
+        offset >>= 1;
+        barrier();
+        if (t < d) {
+            uint ai = offset * (2u * t + 1u) - 1u;
+            uint bi = offset * (2u * t + 2u) - 1u;
+            uint old = temp[ai];
+            temp[ai] = temp[bi];
+            temp[bi] += old;
+        }
+    }
+    barrier();
+
+    if (i0 < uint(numCells)) cellStart[i0] = temp[2u * t];
+    if (i1 < uint(numCells)) cellStart[i1] = temp[2u * t + 1u];
+}

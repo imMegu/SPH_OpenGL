@@ -14,24 +14,20 @@ layout(std430, binding = 2) buffer Densities{
     float densities[];
 };
 
-layout(std430, binding = 3) buffer PredictedPositions {
-    vec4 predictedPositions[];
+layout(std430, binding = 5) buffer SortedPredicted {
+    vec4 sortedPredicted[];
 };
 
-layout(std430, binding = 4) buffer ParticleIndices {
-    uint particleIndices[];
-};
-
-layout(std430, binding = 5) buffer CellIndices {
-    uint cellIndices[];
-};
-
-layout(std430, binding = 6) buffer CellOffsets {
-    uint cellOffsets[];
+layout(std430, binding = 6) buffer CellStart {
+    uint cellStart[];
 };
 
 layout(std430, binding = 7) buffer NearDensities {
     float nearDensities[];
+};
+
+layout(std430, binding = 8) buffer CellEnd {
+    uint cellEnd[];
 };
 
 float SpikyKernelPow2(float dst, float radius)
@@ -58,7 +54,9 @@ void main() {
     uint id = gl_GlobalInvocationID.x;
     if (id >= numParticles) return;
 
-    vec4 pos = predictedPositions[id];
+    // Everything here runs in cell-sorted order: neighbors in the same cell
+    // are adjacent in memory, so these loops read contiguous ranges
+    vec4 pos = sortedPredicted[id];
     float density = 0;
     float nearDensity = 0;
 
@@ -72,23 +70,14 @@ void main() {
                 if (any(lessThan(neighborCoord, ivec3(0))) ||
                     any(greaterThanEqual(neighborCoord, gridDims)))
                     continue;
-                uint flatNeighborIndex = GetFlatCellIndex(neighborCoord, gridDims);
+                uint cell = GetFlatCellIndex(neighborCoord, gridDims);
 
-                uint neighborIterator = cellOffsets[flatNeighborIndex];
-
-                while (neighborIterator != 0xFFFFFFFF && neighborIterator < numParticles) {
-                    if (cellIndices[neighborIterator] != flatNeighborIndex) {
-                        break; // Stepped out of neighbor cell
-                    }
-                    uint particleIndexB = particleIndices[neighborIterator];
-
-                    float dst = length(predictedPositions[particleIndexB].xyz - pos.xyz);
+                for (uint n = cellStart[cell]; n < cellEnd[cell]; n++) {
+                    float dst = length(sortedPredicted[n].xyz - pos.xyz);
                     if (dst < smoothingRadius) {
                         density += SpikyKernelPow2(dst, smoothingRadius);
                         nearDensity += SpikyKernelPow3(dst, smoothingRadius);
                     }
-
-                    neighborIterator++;
                 }
             }
         }

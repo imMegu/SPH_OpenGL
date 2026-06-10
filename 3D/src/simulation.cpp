@@ -4,7 +4,7 @@
 #include <cfloat>
 #include <cmath>
 
-GLuint computeProgram[7]{};
+GLuint computeProgram[8]{};
 int numParticles = 32768 * 2 * 2;
 int pendingNumParticles = 32768 * 2 * 2;
 float smoothingRadius = 0.011f;
@@ -17,11 +17,14 @@ float topZ = 0.3f;
 glm::mat4 boxTransform = glm::mat4(1.0f);
 glm::mat4 boxTransformInverse = glm::mat4(1.0f);
 
-const char *gpuPassNames[GPU_PASS_COUNT] = {"External", "Partition", "Sort",
-                                            "Offsets",  "Density",   "Update"};
+const char *gpuPassNames[GPU_PASS_COUNT] = {"External", "Count",   "Scan",
+                                            "Scatter",  "Density", "Update"};
 double gpuPassMs[GPU_PASS_COUNT] = {};
 
 namespace {
+
+// A scan_blocks workgroup scans two cells per thread
+const int SCAN_BLOCK = 2 * WORKGROUP_SIZE;
 
 // Per-frame uniform locations, fetched once at setup. Constant uniforms
 // (numParticles, deltaTime) are uploaded once and on particle-count changes.
@@ -30,13 +33,16 @@ struct {
 } externalU;
 struct {
   GLint smoothingRadius, gridMin, gridDims;
-} partitionU;
+} countU;
 struct {
-  GLint stage, step;
-} sortU;
+  GLint numCells;
+} scanBlocksU;
 struct {
-  GLint stage, startStep;
-} sortLocalU;
+  GLint numBlocks;
+} scanSumsU;
+struct {
+  GLint numCells;
+} scanAddU;
 struct {
   GLint smoothingRadius, gridMin, gridDims;
   GLint spikyPow2, spikyPow3;
@@ -51,6 +57,11 @@ struct {
 } updateU;
 
 int gridCellCapacity = GRID_CELL_CAPACITY;
+// Per-cell tables (owned here; particle buffers are owned by main/utilities):
+// cellStart  - first sorted index of each cell (exclusive prefix sum)
+// cellEnd    - particle counts, then scatter cursors, then cell ends
+// blockSums  - scan auxiliary (one partial sum per SCAN_BLOCK cells)
+GLuint cellStartBuffer, cellEndBuffer, blockSumsBuffer;
 
 // Double-buffered GL_TIME_ELAPSED queries; results are read one frame late so
 // the CPU never stalls waiting on the GPU.
@@ -65,10 +76,28 @@ GLuint createComputeProgram(const std::string &source, const char *name) {
   return program;
 }
 
+void allocateGridBuffers() {
+  glBindBuffer(GL_SHADER_STORAGE_BUFFER, cellStartBuffer);
+  glBufferData(GL_SHADER_STORAGE_BUFFER, gridCellCapacity * sizeof(uint32_t),
+               nullptr, GL_DYNAMIC_COPY);
+  glBindBufferBase(GL_SHADER_STORAGE_BUFFER, 6, cellStartBuffer);
+
+  glBindBuffer(GL_SHADER_STORAGE_BUFFER, cellEndBuffer);
+  glBufferData(GL_SHADER_STORAGE_BUFFER, gridCellCapacity * sizeof(uint32_t),
+               nullptr, GL_DYNAMIC_COPY);
+  glBindBufferBase(GL_SHADER_STORAGE_BUFFER, 8, cellEndBuffer);
+
+  int maxBlocks = gridCellCapacity / SCAN_BLOCK + 1;
+  glBindBuffer(GL_SHADER_STORAGE_BUFFER, blockSumsBuffer);
+  glBufferData(GL_SHADER_STORAGE_BUFFER, maxBlocks * sizeof(uint32_t), nullptr,
+               GL_DYNAMIC_COPY);
+  glBindBufferBase(GL_SHADER_STORAGE_BUFFER, 11, blockSumsBuffer);
+}
+
 } // namespace
 
 void updateNumParticlesUniform() {
-  for (int i = 0; i < 7; i++) {
+  for (int i = 0; i < 8; i++) {
     GLint loc = glGetUniformLocation(computeProgram[i], "numParticles");
     if (loc != -1) {
       glUseProgram(computeProgram[i]);
@@ -81,14 +110,16 @@ void setupComputeShaders() {
   computeProgram[0] = createComputeProgram(externalShaderSource, "EXTERNAL");
   computeProgram[1] = createComputeProgram(densityShaderSource, "DENSITY");
   computeProgram[2] = createComputeProgram(updateShaderSource, "UPDATE");
-  computeProgram[3] = createComputeProgram(partitionShaderSource, "PARTITION");
-  computeProgram[4] = createComputeProgram(sortShaderSource, "SORT");
-  computeProgram[5] = createComputeProgram(offsetsShaderSource, "OFFSETS");
-  computeProgram[6] = createComputeProgram(sortLocalShaderSource, "SORT LOCAL");
+  computeProgram[3] = createComputeProgram(countShaderSource, "COUNT");
+  computeProgram[4] =
+      createComputeProgram(scanBlocksShaderSource, "SCAN BLOCKS");
+  computeProgram[5] = createComputeProgram(scanSumsShaderSource, "SCAN SUMS");
+  computeProgram[6] = createComputeProgram(scanAddShaderSource, "SCAN ADD");
+  computeProgram[7] = createComputeProgram(scatterShaderSource, "SCATTER");
 
   // Constant uniforms, set once
   updateNumParticlesUniform();
-  for (int i = 0; i < 7; i++) {
+  for (int i = 0; i < 8; i++) {
     GLint deltaTimeLoc = glGetUniformLocation(computeProgram[i], "deltaTime");
     if (deltaTimeLoc != -1) {
       glUseProgram(computeProgram[i]);
@@ -98,16 +129,14 @@ void setupComputeShaders() {
 
   externalU.gravity = glGetUniformLocation(computeProgram[0], "gravity");
 
-  partitionU.smoothingRadius =
+  countU.smoothingRadius =
       glGetUniformLocation(computeProgram[3], "smoothingRadius");
-  partitionU.gridMin = glGetUniformLocation(computeProgram[3], "gridMin");
-  partitionU.gridDims = glGetUniformLocation(computeProgram[3], "gridDims");
+  countU.gridMin = glGetUniformLocation(computeProgram[3], "gridMin");
+  countU.gridDims = glGetUniformLocation(computeProgram[3], "gridDims");
 
-  sortU.stage = glGetUniformLocation(computeProgram[4], "stage");
-  sortU.step = glGetUniformLocation(computeProgram[4], "step");
-
-  sortLocalU.stage = glGetUniformLocation(computeProgram[6], "stage");
-  sortLocalU.startStep = glGetUniformLocation(computeProgram[6], "startStep");
+  scanBlocksU.numCells = glGetUniformLocation(computeProgram[4], "numCells");
+  scanSumsU.numBlocks = glGetUniformLocation(computeProgram[5], "numBlocks");
+  scanAddU.numCells = glGetUniformLocation(computeProgram[6], "numCells");
 
   densityU.smoothingRadius =
       glGetUniformLocation(computeProgram[1], "smoothingRadius");
@@ -146,14 +175,28 @@ void setupComputeShaders() {
   updateU.boxTransformInverse =
       glGetUniformLocation(computeProgram[2], "boxTransformInverse");
 
+  glGenBuffers(1, &cellStartBuffer);
+  glGenBuffers(1, &cellEndBuffer);
+  glGenBuffers(1, &blockSumsBuffer);
+  allocateGridBuffers();
+
   glGenQueries(2 * GPU_PASS_COUNT, &timerQueries[0][0]);
 }
 
-void runSimulationFrame(GLuint offbuf) {
+void shutdownSimulation() {
+  glDeleteBuffers(1, &cellStartBuffer);
+  glDeleteBuffers(1, &cellEndBuffer);
+  glDeleteBuffers(1, &blockSumsBuffer);
+  glDeleteQueries(2 * GPU_PASS_COUNT, &timerQueries[0][0]);
+  for (int i = 0; i < 8; i++)
+    glDeleteProgram(computeProgram[i]);
+}
+
+void runSimulationFrame() {
   if (!running)
     return;
 
-  int numWorkGroups = numParticles / WORKGROUP_SIZE;
+  int numWorkGroups = (numParticles + WORKGROUP_SIZE - 1) / WORKGROUP_SIZE;
 
   // Read the previous frame's timer queries (one frame of latency)
   int writeSet = (int)(timedFrames & 1);
@@ -187,12 +230,9 @@ void runSimulationFrame(GLuint offbuf) {
   int cellCount = gridDims.x * gridDims.y * gridDims.z;
   if (cellCount > gridCellCapacity) {
     gridCellCapacity = cellCount + cellCount / 2;
-    glBindBuffer(GL_SHADER_STORAGE_BUFFER, offbuf);
-    glBufferData(GL_SHADER_STORAGE_BUFFER,
-                 gridCellCapacity * sizeof(uint32_t), nullptr,
-                 GL_DYNAMIC_COPY);
-    glBindBufferBase(GL_SHADER_STORAGE_BUFFER, 6, offbuf);
+    allocateGridBuffers();
   }
+  int numScanBlocks = (cellCount + SCAN_BLOCK - 1) / SCAN_BLOCK;
 
   // 3D smoothing kernel normalization factors
   double h = smoothingRadius;
@@ -219,54 +259,51 @@ void runSimulationFrame(GLuint offbuf) {
   glMemoryBarrier(GL_SHADER_STORAGE_BARRIER_BIT);
   glEndQuery(GL_TIME_ELAPSED);
 
-  // Reset the cell offset table and assign each particle to a grid cell
-  glBeginQuery(GL_TIME_ELAPSED, timerQueries[writeSet][GPU_PASS_PARTITION]);
-  uint32_t clearValue = 0xFFFFFFFF;
-  glBindBuffer(GL_SHADER_STORAGE_BUFFER, offbuf);
+  // Count particles per cell (cellEnd doubles as the histogram)
+  glBeginQuery(GL_TIME_ELAPSED, timerQueries[writeSet][GPU_PASS_COUNTING]);
+  uint32_t zero = 0;
+  glBindBuffer(GL_SHADER_STORAGE_BUFFER, cellEndBuffer);
   glClearBufferData(GL_SHADER_STORAGE_BUFFER, GL_R32UI, GL_RED_INTEGER,
-                    GL_UNSIGNED_INT, &clearValue);
+                    GL_UNSIGNED_INT, &zero);
   glMemoryBarrier(GL_SHADER_STORAGE_BARRIER_BIT);
 
   glUseProgram(computeProgram[3]);
-  glUniform1f(partitionU.smoothingRadius, smoothingRadius);
-  glUniform3fv(partitionU.gridMin, 1, &gridMin[0]);
-  glUniform3iv(partitionU.gridDims, 1, &gridDims[0]);
+  glUniform1f(countU.smoothingRadius, smoothingRadius);
+  glUniform3fv(countU.gridMin, 1, &gridMin[0]);
+  glUniform3iv(countU.gridDims, 1, &gridDims[0]);
   glDispatchCompute(numWorkGroups, 1, 1);
   glMemoryBarrier(GL_SHADER_STORAGE_BARRIER_BIT);
   glEndQuery(GL_TIME_ELAPSED);
 
-  // Bitonic merge sort of (cellIndices, particleIndices). Steps that cross
-  // workgroup boundaries run one global dispatch each; once the step fits
-  // inside a workgroup, the rest of the stage runs in a single
-  // shared-memory dispatch.
-  glBeginQuery(GL_TIME_ELAPSED, timerQueries[writeSet][GPU_PASS_SORT]);
-  for (uint32_t stage = 2; stage <= (uint32_t)numParticles; stage <<= 1) {
-    uint32_t step = stage >> 1;
-    if (step >= WORKGROUP_SIZE) {
-      glUseProgram(computeProgram[4]);
-      glUniform1i(sortU.stage, (int)stage);
-      for (; step >= WORKGROUP_SIZE; step >>= 1) {
-        glUniform1i(sortU.step, (int)step);
-        glDispatchCompute(numWorkGroups, 1, 1);
-        glMemoryBarrier(GL_SHADER_STORAGE_BARRIER_BIT);
-      }
-    }
-    glUseProgram(computeProgram[6]);
-    glUniform1i(sortLocalU.stage, (int)stage);
-    glUniform1i(sortLocalU.startStep, (int)step);
-    glDispatchCompute(numWorkGroups, 1, 1);
-    glMemoryBarrier(GL_SHADER_STORAGE_BARRIER_BIT);
-  }
-  glEndQuery(GL_TIME_ELAPSED);
+  // Exclusive prefix sum of the counts -> cellStart, and seed the scatter
+  // cursors (cellEnd) with the same offsets
+  glBeginQuery(GL_TIME_ELAPSED, timerQueries[writeSet][GPU_PASS_SCAN]);
+  glUseProgram(computeProgram[4]);
+  glUniform1i(scanBlocksU.numCells, cellCount);
+  glDispatchCompute(numScanBlocks, 1, 1);
+  glMemoryBarrier(GL_SHADER_STORAGE_BARRIER_BIT);
 
-  // Find the first sorted index of each cell
-  glBeginQuery(GL_TIME_ELAPSED, timerQueries[writeSet][GPU_PASS_OFFSETS]);
   glUseProgram(computeProgram[5]);
+  glUniform1i(scanSumsU.numBlocks, numScanBlocks);
+  glDispatchCompute(1, 1, 1);
+  glMemoryBarrier(GL_SHADER_STORAGE_BARRIER_BIT);
+
+  glUseProgram(computeProgram[6]);
+  glUniform1i(scanAddU.numCells, cellCount);
+  glDispatchCompute((cellCount + WORKGROUP_SIZE - 1) / WORKGROUP_SIZE, 1, 1);
+  glMemoryBarrier(GL_SHADER_STORAGE_BARRIER_BIT);
+  glEndQuery(GL_TIME_ELAPSED);
+
+  // Scatter the particle data into cell order so the neighbor loops below
+  // read contiguous memory. After this pass the scatter cursors in cellEnd
+  // have advanced to each cell's end index.
+  glBeginQuery(GL_TIME_ELAPSED, timerQueries[writeSet][GPU_PASS_SCATTER]);
+  glUseProgram(computeProgram[7]);
   glDispatchCompute(numWorkGroups, 1, 1);
   glMemoryBarrier(GL_SHADER_STORAGE_BARRIER_BIT);
   glEndQuery(GL_TIME_ELAPSED);
 
-  // Density + near density
+  // Density + near density (sorted space)
   glBeginQuery(GL_TIME_ELAPSED, timerQueries[writeSet][GPU_PASS_DENSITY]);
   glUseProgram(computeProgram[1]);
   glUniform1f(densityU.smoothingRadius, smoothingRadius);
@@ -278,7 +315,10 @@ void runSimulationFrame(GLuint offbuf) {
   glMemoryBarrier(GL_SHADER_STORAGE_BARRIER_BIT);
   glEndQuery(GL_TIME_ELAPSED);
 
-  // Pressure + near-pressure + viscosity forces, integration, collisions
+  // Pressure + near-pressure + viscosity forces, integration, collisions.
+  // Reads sorted data, writes results to the position/velocity buffers at
+  // the sorted index: the sorted order simply becomes next frame's particle
+  // order, so no back-mapping is needed.
   glBeginQuery(GL_TIME_ELAPSED, timerQueries[writeSet][GPU_PASS_UPDATE]);
   glUseProgram(computeProgram[2]);
   glUniform1f(updateU.smoothingRadius, smoothingRadius);
@@ -301,6 +341,6 @@ void runSimulationFrame(GLuint offbuf) {
   glUniformMatrix4fv(updateU.boxTransformInverse, 1, GL_FALSE,
                      &boxTransformInverse[0][0]);
   glDispatchCompute(numWorkGroups, 1, 1);
-  glMemoryBarrier(GL_SHADER_STORAGE_BARRIER_BIT);
+  glMemoryBarrier(GL_SHADER_STORAGE_BARRIER_BIT | GL_VERTEX_ATTRIB_ARRAY_BARRIER_BIT);
   glEndQuery(GL_TIME_ELAPSED);
 }

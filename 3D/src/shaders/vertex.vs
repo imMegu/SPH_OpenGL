@@ -9,6 +9,7 @@ uniform mat4 u_view;
 uniform float sphereRadius;
 
 out vec2 texCoord;
+out vec3 viewCenter;
 out vec4 particleColor;
 
 void main() {
@@ -21,18 +22,16 @@ void main() {
     vec4 color3 = vec4(0.9, 0.9, 0.9, 1.0);
 
     if (t <= 0.55) {
-        float localT = t / 0.55;
-        particleColor = mix(color1, color2, localT);
-    } else { 
-        float localT = (t - 0.55) / (1.00 - 0.55);
-        particleColor = mix(color2, color3, localT);
-    }     
-    // Billboard transformation
-    vec3 right = vec3(u_view[0][0], u_view[1][0], u_view[2][0]) * sphereRadius;
-    vec3 up = vec3(u_view[0][1], u_view[1][1], u_view[2][1]) * sphereRadius;
-    
-    vec3 worldPos = instancePos.xyz + right * quadVertex.x + up * quadVertex.y;
-    gl_Position = u_proj * u_view * vec4(worldPos, 1.0);
-    
+        particleColor = mix(color1, color2, t / 0.55);
+    } else {
+        particleColor = mix(color2, color3, (t - 0.55) / 0.45);
+    }
+
+    // Billboard directly in view space; the fragment shader reconstructs the
+    // sphere surface from texCoord
+    viewCenter = (u_view * vec4(instancePos.xyz, 1.0)).xyz;
+    vec3 viewPos = viewCenter + vec3(quadVertex, 0.0) * sphereRadius;
+    gl_Position = u_proj * vec4(viewPos, 1.0);
+
     texCoord = quadVertex;
 }

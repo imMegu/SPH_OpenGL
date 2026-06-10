@@ -10,6 +10,7 @@
 
 #include "camera.h"
 #include "gui.h"
+#include "renderer.h"
 #include "shader.h"
 #include "simulation.h"
 #include "utilities.h"
@@ -54,8 +55,7 @@ float orbitRadius = 1.0f;
 
 // Particle rendering
 GLuint renderProgram;
-GLuint posBuffer, velBuffer, densityBuffer, nearDensityBuffer, predBuffer;
-GLuint particleIndexBuffer, cellIndexBuffer, cellOffsetBuffer;
+ParticleBuffers particleBuffers;
 // Cube rendering
 GLuint cubeProgram;
 GLuint cubeVAO, cubeVBO, cubeEBO;
@@ -77,15 +77,12 @@ static glm::vec3 currentBoxCenter() {
 }
 
 static void rebuildParticleBuffers() {
-  GLuint oldBuffers[] = {posBuffer,         velBuffer,  densityBuffer,
-                         nearDensityBuffer, predBuffer, particleIndexBuffer,
-                         cellIndexBuffer,   quadVBO};
-  glDeleteBuffers(8, oldBuffers);
+  deleteParticleBuffers(&particleBuffers);
+  glDeleteBuffers(1, &quadVBO);
   glDeleteVertexArrays(1, &quadVAO);
-  createParticleBuffers(&posBuffer, &velBuffer, &densityBuffer,
-                        &nearDensityBuffer, &predBuffer, &particleIndexBuffer,
-                        &cellIndexBuffer);
-  setupQuadBuffers(&quadVAO, &quadVBO, &posBuffer, &velBuffer);
+  createParticleBuffers(&particleBuffers);
+  setupQuadBuffers(&quadVAO, &quadVBO, particleBuffers.positions,
+                   particleBuffers.velocities);
   updateNumParticlesUniform();
 }
 
@@ -141,21 +138,19 @@ int main() {
   // Uniform locations, fetched once
   GLint locProj = glGetUniformLocation(renderProgram, "u_proj");
   GLint locView = glGetUniformLocation(renderProgram, "u_view");
-  GLint locCameraPos = glGetUniformLocation(renderProgram, "u_cameraPos");
   GLint locSphereRadius = glGetUniformLocation(renderProgram, "sphereRadius");
   GLint locCubeModel = glGetUniformLocation(cubeProgram, "u_model");
   GLint locCubeProj = glGetUniformLocation(cubeProgram, "u_proj");
   GLint locCubeView = glGetUniformLocation(cubeProgram, "u_view");
 
   // Buffer Creation
-  createParticleBuffers(&posBuffer, &velBuffer, &densityBuffer,
-                        &nearDensityBuffer, &predBuffer, &particleIndexBuffer,
-                        &cellIndexBuffer);
-  createGridBuffer(&cellOffsetBuffer);
+  createParticleBuffers(&particleBuffers);
 
   setupCubeBuffers(&cubeVAO, &cubeVBO, &cubeEBO);
-  setupQuadBuffers(&quadVAO, &quadVBO, &posBuffer, &velBuffer);
+  setupQuadBuffers(&quadVAO, &quadVBO, particleBuffers.positions,
+                   particleBuffers.velocities);
 
+  setupWaterRenderer(scrWidth, scrHeight);
   setupGUI(window);
 
   double currentTime = glfwGetTime();
@@ -177,33 +172,46 @@ int main() {
     // stepping multiple times per frame to track real time only lowers the
     // framerate. The step size stays fixed for stability, which means sim
     // speed follows the framerate.
-    runSimulationFrame(cellOffsetBuffer);
+    runSimulationFrame();
 
-    glClearColor(0.173, 0.173, 0.173, 1.0f);
-    glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
-    glEnable(GL_DEPTH_TEST);
-
-    // Render particles
-    glUseProgram(renderProgram);
     glm::mat4 Projection =
         glm::perspective(glm::radians(camera.Zoom),
                          (float)scrWidth / (float)scrHeight, 0.1f, 10.0f);
-    glUniformMatrix4fv(locProj, 1, GL_FALSE, &Projection[0][0]);
     glm::mat4 View = camera.GetViewMatrix();
-    glUniformMatrix4fv(locView, 1, GL_FALSE, &View[0][0]);
-    glm::vec3 cameraPos = camera.GetPosition();
-    glUniform3f(locCameraPos, cameraPos.x, cameraPos.y, cameraPos.z);
-    glUniform1f(locSphereRadius, sphereRadius / 1000);
-    glBindVertexArray(quadVAO);
-    glDrawArraysInstanced(GL_TRIANGLE_STRIP, 0, 4, numParticles);
 
-    // Render cube
-    glUseProgram(cubeProgram);
-    glUniformMatrix4fv(locCubeModel, 1, GL_FALSE, &boxTransform[0][0]);
-    glUniformMatrix4fv(locCubeProj, 1, GL_FALSE, &Projection[0][0]);
-    glUniformMatrix4fv(locCubeView, 1, GL_FALSE, &View[0][0]);
-    glBindVertexArray(cubeVAO);
-    glDrawElements(GL_LINES, 24, GL_UNSIGNED_INT, 0);
+    auto drawCube = [&]() {
+      glUseProgram(cubeProgram);
+      glUniformMatrix4fv(locCubeModel, 1, GL_FALSE, &boxTransform[0][0]);
+      glUniformMatrix4fv(locCubeProj, 1, GL_FALSE, &Projection[0][0]);
+      glUniformMatrix4fv(locCubeView, 1, GL_FALSE, &View[0][0]);
+      glBindVertexArray(cubeVAO);
+      glDrawElements(GL_LINES, 24, GL_UNSIGNED_INT, 0);
+    };
+
+    resizeWaterRenderer(scrWidth, scrHeight);
+    if (waterRendering) {
+      // Background + cube go to the offscreen scene target; the water passes
+      // then composite everything to the default framebuffer
+      beginScenePass();
+      drawCube();
+      renderWater(quadVAO, Projection, View, sphereRadius / 1000);
+    } else {
+      // Plain sphere-impostor view
+      glBindFramebuffer(GL_FRAMEBUFFER, 0);
+      glViewport(0, 0, scrWidth, scrHeight);
+      glClearColor(0.173, 0.173, 0.173, 1.0f);
+      glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
+      glEnable(GL_DEPTH_TEST);
+
+      glUseProgram(renderProgram);
+      glUniformMatrix4fv(locProj, 1, GL_FALSE, &Projection[0][0]);
+      glUniformMatrix4fv(locView, 1, GL_FALSE, &View[0][0]);
+      glUniform1f(locSphereRadius, sphereRadius / 1000);
+      glBindVertexArray(quadVAO);
+      glDrawArraysInstanced(GL_TRIANGLE_STRIP, 0, 4, numParticles);
+
+      drawCube();
+    }
 
     // Render GUI
     renderGUI();
@@ -214,23 +222,16 @@ int main() {
 
   // Cleanup
   shutdownGUI();
+  shutdownWaterRenderer();
+  shutdownSimulation();
+  deleteParticleBuffers(&particleBuffers);
   glDeleteVertexArrays(1, &quadVAO);
   glDeleteBuffers(1, &quadVBO);
-  glDeleteBuffers(1, &posBuffer);
-  glDeleteBuffers(1, &velBuffer);
-  glDeleteBuffers(1, &densityBuffer);
-  glDeleteBuffers(1, &nearDensityBuffer);
-  glDeleteBuffers(1, &predBuffer);
-  glDeleteBuffers(1, &particleIndexBuffer);
-  glDeleteBuffers(1, &cellIndexBuffer);
-  glDeleteBuffers(1, &cellOffsetBuffer);
   glDeleteVertexArrays(1, &cubeVAO);
   glDeleteBuffers(1, &cubeVBO);
   glDeleteBuffers(1, &cubeEBO);
   glDeleteProgram(renderProgram);
   glDeleteProgram(cubeProgram);
-  for (int i = 0; i < 7; i++)
-    glDeleteProgram(computeProgram[i]);
   glfwTerminate();
 
   return 0;

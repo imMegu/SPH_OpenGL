@@ -11,6 +11,8 @@ extern float boundSpeed;
 extern bool singleAxis;
 extern bool resetRequested;
 extern bool vsyncEnabled;
+extern bool waterRendering;
+extern float waterAbsorption;
 
 void setupGUI(GLFWwindow *window);
 void renderGUI();

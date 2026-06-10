@@ -1,0 +1,45 @@
+#version 430 core
+
+// Single-workgroup exclusive scan of the per-block sums, in place. Iterates
+// over the buffer in WORKGROUP_SIZE chunks with a running carry, so it
+// handles any number of blocks in one dispatch.
+
+uniform int numBlocks;
+
+layout (local_size_x = WORKGROUP_SIZE) in;
+
+layout(std430, binding = 11) buffer BlockSums {
+    uint blockSums[];
+};
+
+shared uint chunk[WORKGROUP_SIZE];
+shared uint carry;
+
+void main() {
+    uint t = gl_LocalInvocationID.x;
+    if (t == 0u) carry = 0u;
+
+    uint numChunks = (uint(numBlocks) + uint(WORKGROUP_SIZE) - 1u) / uint(WORKGROUP_SIZE);
+    for (uint c = 0u; c < numChunks; c++) {
+        uint i = c * uint(WORKGROUP_SIZE) + t;
+        uint original = (i < uint(numBlocks)) ? blockSums[i] : 0u;
+        barrier();
+        chunk[t] = original;
+        barrier();
+
+        // Hillis-Steele inclusive scan of the chunk
+        for (uint off = 1u; off < uint(WORKGROUP_SIZE); off <<= 1) {
+            uint v = (t >= off) ? chunk[t - off] : 0u;
+            barrier();
+            chunk[t] += v;
+            barrier();
+        }
+
+        uint chunkCarry = carry;
+        if (i < uint(numBlocks))
+            blockSums[i] = chunkCarry + chunk[t] - original; // make it exclusive
+        barrier();
+        if (t == 0u)
+            carry = chunkCarry + chunk[WORKGROUP_SIZE - 1];
+    }
+}
