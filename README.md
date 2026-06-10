@@ -38,10 +38,31 @@ Once compiled, you can run the simulator with:
 ```
 ./execute
 ```
+## Controls (3D)
+| Input | Action |
+| --- | --- |
+| Left mouse drag | Orbit the camera around the box |
+| Scroll wheel | Zoom (field of view) |
+| Alt | Toggle fly camera (mouse look + WASD) |
+| W / A / S / D | Move the camera (fly mode) |
+| Space | Pause / resume the simulation |
+| Arrow keys | Resize the box (X and Z axes) |
+| R | Rotate the box around the Y axis |
+| Esc | Quit |
+
+The GUI exposes the simulation parameters (smoothing radius, density,
+pressure, near pressure, viscosity, gravity), a particle count selector,
+pause/reset buttons, a VSync toggle, and live per-pass GPU timings measured
+with `GL_TIME_ELAPSED` queries.
+
 # Neighborhood Search
 SPH simulation calculates particle properties based on **neighboring particles** within an influence radius.
-The naive approach is to "brute force" these calculations by, ```for each particle, iterating through every other particle, and only then determine if they are inside the particle's influence radius.``` This turns out to be a ```O(n^2)``` algorithm, which scales very poorly when more particles are added.  
-This implementation utilizes the Spatial Hashing technique by Nvidia as described in this paper https://web.archive.org/web/20140725014123/https://docs.nvidia.com/cuda/samples/5_Simulations/particles/doc/particles.pdf, which improves particle lookup to ```O(nlogn)``` with Bitonic Merge Sort and ```O(n)``` with Radix Sort (Worst case is still ```O(n^2)``` when all particles lie in the same cell). The sorting algorithm I chose is Bitonic Merge Sort, although I plan to switch to Radix Sort in the future for better efficiency.
+The naive approach is to "brute force" these calculations by, ```for each particle, iterating through every other particle, and only then determine if they are inside the particle's influence radius.``` This turns out to be a ```O(n^2)``` algorithm, which scales very poorly when more particles are added.
+This implementation follows the particle-grid approach described in Nvidia's paper https://web.archive.org/web/20140725014123/https://docs.nvidia.com/cuda/samples/5_Simulations/particles/doc/particles.pdf: particles are binned into grid cells, sorted by cell index with a GPU Bitonic Merge Sort (using shared memory for the steps that fit inside a workgroup), and looked up through a per-cell offset table.
+- The **3D version** uses a dense uniform grid over the simulation box, sized each frame from the box bounds and smoothing radius. Cells are indexed directly, so there are no hash collisions.
+- The **2D version** uses the spatial hashing variant from the paper.
+
+The 3D version also adds a near-pressure term (Clavet et al., "Particle-based Viscoelastic Fluid Simulation") to prevent particle clumping.
 # Roadmap
-- **Improve Memory Efficiency:** Optimize GPU memory usage and data transfer.
+- **Counting sort + data reorder:** Replace the bitonic sort with an O(n) counting sort and scatter the particle data into cell order for coalesced memory access (the density/update passes dominate the frame time).
 - **Visual Enhancements:** Add shaders for realistic fluid rendering (e.g., reflections, refractions).

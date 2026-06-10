@@ -108,6 +108,20 @@ public:
     updateCameraVectors();
   }
 
+  // Places the camera on a sphere of `radius` around `target`, at the given
+  // orbit angles (degrees), looking at the target
+  void OrbitAround(const glm::vec3 &target, float yawDeg, float pitchDeg,
+                   float radius) {
+    float yawR = glm::radians(yawDeg);
+    float pitchR = glm::radians(pitchDeg);
+    glm::vec3 offset(cos(pitchR) * cos(yawR), sin(pitchR),
+                     cos(pitchR) * sin(yawR));
+    Position = target + offset * radius;
+    Yaw = yawDeg + 180.0f; // look back at the target
+    Pitch = -pitchDeg;
+    updateCameraVectors();
+  }
+
   // processes input received from a mouse scroll-wheel event. Only requires
   // input on the vertical wheel-axis
   void ProcessMouseScroll(float yoffset) {

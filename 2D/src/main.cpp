@@ -102,6 +102,7 @@ void renderGUI() {
 
 int main() {
   // Initialize GLFW
+  glfwInitHint(GLFW_PLATFORM, GLFW_PLATFORM_X11);
   if (!glfwInit()) {
     std::cerr << "Failed to initialize GLFW" << std::endl;
     return -1;

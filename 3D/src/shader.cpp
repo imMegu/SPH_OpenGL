@@ -1,26 +1,67 @@
 #include "shader.h"
+#include "simulation.h"
 #include <filesystem>
 #include <fstream>
 #include <iostream>
 #include <sstream>
 
+namespace {
+
+// Shader paths are resolved relative to the executable so the program works
+// regardless of the current working directory.
+std::filesystem::path ExecutableDir() {
+  std::error_code ec;
+  std::filesystem::path exe =
+      std::filesystem::read_symlink("/proc/self/exe", ec);
+  if (ec)
+    return std::filesystem::current_path();
+  return exe.parent_path();
+}
+
+std::string LoadFile(const std::filesystem::path &path) {
+  std::ifstream file(path);
+  if (!file.is_open()) {
+    throw std::ios_base::failure("Could not open file: " + path.string());
+  }
+  std::stringstream stream;
+  stream << file.rdbuf();
+  return stream.str();
+}
+
+// Expands #include "file" directives (one level, relative to the shader's
+// directory) and injects the C++-side constants right after the #version
+// line so shaders and host code can never disagree on them.
+std::string PreprocessShader(const std::filesystem::path &shader_path) {
+  const std::string preamble =
+      "#define WORKGROUP_SIZE " + std::to_string(WORKGROUP_SIZE) + "\n";
+
+  std::istringstream input(LoadFile(shader_path));
+  std::ostringstream output;
+  std::string line;
+  while (std::getline(input, line)) {
+    if (line.rfind("#include", 0) == 0) {
+      size_t first = line.find('"');
+      size_t last = line.rfind('"');
+      std::string include_name = line.substr(first + 1, last - first - 1);
+      output << LoadFile(shader_path.parent_path() / include_name) << '\n';
+    } else {
+      output << line << '\n';
+      if (line.rfind("#version", 0) == 0)
+        output << preamble;
+    }
+  }
+  return output.str();
+}
+
+} // namespace
+
 GLuint CompileShader(const std::string &relative_path, GLenum shader_type,
                      const std::string &shader_name) {
   std::string shader_code;
   try {
-    std::filesystem::path shader_path =
-        std::filesystem::current_path().parent_path().string() + relative_path;
-
-    std::ifstream shader_file(shader_path);
-    if (!shader_file.is_open()) {
-      throw std::ios_base::failure("Could not open file: " +
-                                   shader_path.string());
-    }
-    std::stringstream shader_stream;
-    shader_stream << shader_file.rdbuf();
-    shader_code = shader_stream.str();
+    shader_code = PreprocessShader(ExecutableDir() / relative_path);
     if (shader_code.empty()) {
-      std::cerr << "ERROR::SHADER::FILE_IS_EMPTY: " << shader_path.string()
+      std::cerr << "ERROR::SHADER::FILE_IS_EMPTY: " << relative_path
                 << std::endl;
       return 0;
     }
@@ -35,26 +76,6 @@ GLuint CompileShader(const std::string &relative_path, GLenum shader_type,
   glCompileShader(shader);
   checkCompileErrors(shader, shader_name);
   return shader;
-}
-
-GLuint createRenderProgram(const std::string &vertexPath,
-                           const std::string &fragmentPath,
-                           const std::string &geometryPath) {
-  GLuint vertexShader = CompileShader(vertexPath, GL_VERTEX_SHADER, "VERTEX");
-  GLuint fragmentShader =
-      CompileShader(fragmentPath, GL_FRAGMENT_SHADER, "FRAGMENT");
-  GLuint geometryShader =
-      CompileShader(geometryPath, GL_GEOMETRY_SHADER, "GEOMETRY");
-  GLuint program = glCreateProgram();
-  glAttachShader(program, vertexShader);
-  glAttachShader(program, fragmentShader);
-  glAttachShader(program, geometryShader);
-  glLinkProgram(program);
-  checkCompileErrors(program, "RENDER PROGRAM");
-  glDeleteShader(vertexShader);
-  glDeleteShader(fragmentShader);
-  glDeleteShader(geometryShader);
-  return program;
 }
 
 GLuint createRenderProgram(const std::string &vertexPath,
@@ -115,21 +136,4 @@ void checkCompileErrors(GLuint shader, std::string type) {
       std::cout << "------------------------" << std::endl;
     }
   }
-}
-
-void setMat4(GLuint ID, const std::string &name, const glm::mat4 &mat) {
-  glUniformMatrix4fv(glGetUniformLocation(ID, name.c_str()), 1, GL_FALSE,
-                     &mat[0][0]);
-}
-
-void setFloat(GLuint ID, const std::string &name, float f) {
-  glUniform1f(glGetUniformLocation(ID, name.c_str()), f);
-}
-
-void setInt(GLuint ID, const std::string &name, int i) {
-  glUniform1i(glGetUniformLocation(ID, name.c_str()), i);
-}
-
-void setVec3(GLuint ID, const std::string &name, const glm::vec3 &vec) {
-  glUniform3f(glGetUniformLocation(ID, name.c_str()), vec.x, vec.y, vec.z);
 }

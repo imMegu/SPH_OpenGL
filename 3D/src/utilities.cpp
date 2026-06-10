@@ -17,19 +17,8 @@ std::vector<glm::vec3> cubeVertices = {
 std::vector<unsigned int> cubeIndices = {0, 1, 1, 2, 2, 3, 3, 0, 4, 5, 5, 6,
                                          6, 7, 7, 4, 0, 4, 1, 5, 2, 6, 3, 7};
 
-glm::vec2 genRandomVector2d() {
-  std::random_device rd;
-  std::mt19937 gen(rd());
-  std::uniform_real_distribution<float> dist_x(((botX + 0.20f * (topX - botX))),
-                                               (botX + 0.80f * (topX - botX)));
-  std::uniform_real_distribution<float> dist_y(((botY + 0.30f * (topY - botY))),
-                                               (botY + 0.70f * (topY - botY)));
-  return glm::vec2(dist_x(gen), dist_y(gen));
-}
-
 glm::vec4 genRandomVector3d() {
-  std::random_device rd;
-  std::mt19937 gen(rd());
+  static std::mt19937 gen{std::random_device{}()};
   std::uniform_real_distribution<float> dist_x(((botX + 0.00f * (topX - botX))),
                                                (botX + 0.60f * (topX - botX)));
   std::uniform_real_distribution<float> dist_y(((botY + 0.30f * (topY - botY))),
@@ -39,57 +28,48 @@ glm::vec4 genRandomVector3d() {
   return glm::vec4(dist_x(gen), dist_y(gen), dist_z(gen), 0.0f);
 }
 
-void setupBuffers(const std::vector<glm::vec4> &positions,
-                  const std::vector<glm::vec4> &velocities,
-                  const std::vector<glm::vec4> &predictedPositions,
-                  const float *densities,
-                  const std::vector<uint32_t> &particleIndices,
-                  const std::vector<uint32_t> &cellIndices,
-                  const std::vector<uint32_t> &cellOffsets, GLuint *posBuffer,
-                  GLuint *velBuffer, GLuint *densityBuffer, GLuint *predBuffer,
-                  GLuint *particleIndexBuffer, GLuint *cellIndexBuffer,
-                  GLuint *cellOffsetBuffer) {
-  glGenBuffers(1, posBuffer);
-  glBindBuffer(GL_SHADER_STORAGE_BUFFER, *posBuffer);
-  glBufferData(GL_SHADER_STORAGE_BUFFER, NUM_PARTICLES * sizeof(glm::vec4),
-               &positions[0], GL_DYNAMIC_COPY);
-  glBindBufferBase(GL_SHADER_STORAGE_BUFFER, 0, *posBuffer);
+namespace {
+void createStorageBuffer(GLuint *buffer, GLuint binding, GLsizeiptr size,
+                         const void *data) {
+  glGenBuffers(1, buffer);
+  glBindBuffer(GL_SHADER_STORAGE_BUFFER, *buffer);
+  glBufferData(GL_SHADER_STORAGE_BUFFER, size, data, GL_DYNAMIC_COPY);
+  glBindBufferBase(GL_SHADER_STORAGE_BUFFER, binding, *buffer);
+}
+} // namespace
 
-  glGenBuffers(1, velBuffer);
-  glBindBuffer(GL_SHADER_STORAGE_BUFFER, *velBuffer);
-  glBufferData(GL_SHADER_STORAGE_BUFFER, NUM_PARTICLES * sizeof(glm::vec4),
-               &velocities[0], GL_DYNAMIC_COPY);
-  glBindBufferBase(GL_SHADER_STORAGE_BUFFER, 1, *velBuffer);
+void createParticleBuffers(GLuint *posBuffer, GLuint *velBuffer,
+                           GLuint *densityBuffer, GLuint *nearDensityBuffer,
+                           GLuint *predBuffer, GLuint *particleIndexBuffer,
+                           GLuint *cellIndexBuffer) {
+  std::vector<glm::vec4> positions(numParticles);
+  std::vector<glm::vec4> velocities(numParticles, glm::vec4(0.0f));
+  std::vector<uint32_t> particleIndices(numParticles);
+  std::vector<float> zeros(numParticles, 0.0f);
+  for (int i = 0; i < numParticles; ++i) {
+    positions[i] = genRandomVector3d();
+    particleIndices[i] = i;
+  }
 
-  glGenBuffers(1, densityBuffer);
-  glBindBuffer(GL_SHADER_STORAGE_BUFFER, *densityBuffer);
-  glBufferData(GL_SHADER_STORAGE_BUFFER, NUM_PARTICLES * sizeof(float),
-               densities, GL_DYNAMIC_COPY);
-  glBindBufferBase(GL_SHADER_STORAGE_BUFFER, 2, *densityBuffer);
+  GLsizeiptr vec4Size = numParticles * sizeof(glm::vec4);
+  GLsizeiptr uintSize = numParticles * sizeof(uint32_t);
+  GLsizeiptr floatSize = numParticles * sizeof(float);
 
-  glGenBuffers(1, predBuffer);
-  glBindBuffer(GL_SHADER_STORAGE_BUFFER, *predBuffer);
-  glBufferData(GL_SHADER_STORAGE_BUFFER, NUM_PARTICLES * sizeof(glm::vec4),
-               &predictedPositions[0], GL_DYNAMIC_COPY);
-  glBindBufferBase(GL_SHADER_STORAGE_BUFFER, 3, *predBuffer);
+  createStorageBuffer(posBuffer, 0, vec4Size, positions.data());
+  createStorageBuffer(velBuffer, 1, vec4Size, velocities.data());
+  createStorageBuffer(densityBuffer, 2, floatSize, zeros.data());
+  // overwritten by the external-forces pass before first use
+  createStorageBuffer(predBuffer, 3, vec4Size, positions.data());
+  createStorageBuffer(particleIndexBuffer, 4, uintSize,
+                      particleIndices.data());
+  createStorageBuffer(cellIndexBuffer, 5, uintSize, nullptr);
+  createStorageBuffer(nearDensityBuffer, 7, floatSize, zeros.data());
+}
 
-  glGenBuffers(1, particleIndexBuffer);
-  glBindBuffer(GL_SHADER_STORAGE_BUFFER, *particleIndexBuffer);
-  glBufferData(GL_SHADER_STORAGE_BUFFER, NUM_PARTICLES * sizeof(uint32_t),
-               &particleIndices[0], GL_DYNAMIC_COPY);
-  glBindBufferBase(GL_SHADER_STORAGE_BUFFER, 4, *particleIndexBuffer);
-
-  glGenBuffers(1, cellIndexBuffer);
-  glBindBuffer(GL_SHADER_STORAGE_BUFFER, *cellIndexBuffer);
-  glBufferData(GL_SHADER_STORAGE_BUFFER, NUM_PARTICLES * sizeof(uint32_t),
-               &cellIndices[0], GL_DYNAMIC_COPY);
-  glBindBufferBase(GL_SHADER_STORAGE_BUFFER, 5, *cellIndexBuffer);
-
-  glGenBuffers(1, cellOffsetBuffer);
-  glBindBuffer(GL_SHADER_STORAGE_BUFFER, *cellOffsetBuffer);
-  glBufferData(GL_SHADER_STORAGE_BUFFER, cellOffsets.size() * sizeof(uint32_t),
-               &cellOffsets[0], GL_DYNAMIC_COPY);
-  glBindBufferBase(GL_SHADER_STORAGE_BUFFER, 6, *cellOffsetBuffer);
+void createGridBuffer(GLuint *cellOffsetBuffer) {
+  // contents are cleared at the start of every simulation step
+  createStorageBuffer(cellOffsetBuffer, 6,
+                      GRID_CELL_CAPACITY * sizeof(uint32_t), nullptr);
 }
 
 void setupCubeBuffers(GLuint *cubeVAO, GLuint *cubeVBO, GLuint *cubeEBO) {
