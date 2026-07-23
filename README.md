@@ -1,6 +1,6 @@
 
 # SPH Fluid Simulator (C++ / OpenGL)
-A real-time Smoothed Particle Hydrodynamics (SPH) fluid simulation written in C++ with OpenGL. The whole simulation runs on the GPU in compute shaders; at the default 131k particles a full step takes well under a millisecond on a modern GPU.
+A real-time Smoothed Particle Hydrodynamics (SPH) fluid simulation written in C++ with OpenGL. The whole simulation runs on the GPU in compute shaders.
 ![image](https://github.com/user-attachments/assets/519fe99c-ca88-4f5e-bc1e-ae67d5ad6bb1)
 > [!NOTE]
 > [Quick video showcasing the app running.](https://youtu.be/x-2bFkBimAg)
@@ -22,7 +22,6 @@ cmake ..
 make
 ./execute
 ```
-Shaders are copied next to the binary at build time and loaded relative to the executable, so it can be launched from any directory.
 
 ## Controls
 | Input | Action |
@@ -35,8 +34,6 @@ Shaders are copied next to the binary at build time and loaded relative to the e
 | Arrow keys | Resize the box (X and Z axes) |
 | R | Rotate the box around the Y axis |
 | Esc | Quit |
-
-The GUI exposes the simulation parameters (smoothing radius, density, pressure, near pressure, viscosity, gravity), a particle count selector, pause/reset buttons, a VSync toggle, the water rendering toggle, and live per-pass GPU timings.
 
 ## Simulation steps
 
