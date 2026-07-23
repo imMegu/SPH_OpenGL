@@ -12,9 +12,20 @@
 //      Fresnel sky reflection + specular
 extern bool waterRendering;
 extern float waterAbsorption;
+extern bool shadowsEnabled;
+extern float shadowStrength;
 
 void setupWaterRenderer(int width, int height);
 void resizeWaterRenderer(int width, int height);
+// Renders the particle impostors from the light's view into the shadow map
+// (light-space depth of the frontmost fluid). Call once per frame before the
+// scene is drawn; used by the floor shader (cast shadow) in both render modes
+// and by the composite pass (self-shadowing). Leaves the shadow FBO bound.
+void renderShadowMap(GLuint particleVAO, float sphereRadiusWorld);
+// Shadow map sampling state for the floor shader
+GLuint shadowMapTexture();
+const glm::mat4 &lightViewMatrix();
+const glm::mat4 &lightViewProjMatrix();
 // Binds and clears the offscreen scene framebuffer; the caller then renders
 // the background scene (cube) into it with depth testing
 void beginScenePass();

@@ -13,9 +13,16 @@ uniform sampler2D fluidDepthTex; // bilateral-blurred eye-space depth, 0 = no fl
 uniform sampler2D thicknessTex;
 uniform sampler2D sceneColorTex;
 uniform sampler2D sceneDepthTex; // hardware depth of the background scene
+uniform sampler2D shadowMapTex;  // light-space depth of the frontmost fluid, 0 = none
 uniform mat4 u_proj;
 uniform mat4 u_view;
+uniform mat4 u_invView;
+uniform mat4 u_lightView;
+uniform mat4 u_lightVP;
+uniform vec3 u_lightDir; // view space, toward the light
 uniform float absorption;
+uniform float u_shadowBias; // a few particle radii, hides the surface's own depth
+uniform float u_shadowStrength;
 
 // Reconstruct view-space position from screen uv + eye-space depth
 vec3 EyePos(vec2 coord, float eyeDepth) {
@@ -66,7 +73,23 @@ void main() {
     if (N.z < 0.0) N = -N; // always face the camera
 
     vec3 viewDir = normalize(-P);
-    vec3 lightDir = normalize(vec3(0.4, 0.6, 0.8)); // view space
+    vec3 lightDir = u_lightDir;
+
+    // Self-shadow: how far this surface point sits behind the fluid front as
+    // seen from the light. ~0 on the lit side (the surface IS the front),
+    // growing on the side facing away, so deep/occluded fluid darkens softly.
+    float shadow = 0.0;
+    vec3 worldP = (u_invView * vec4(P, 1.0)).xyz;
+    vec2 lightUV = (u_lightVP * vec4(worldP, 1.0)).xy * 0.5 + 0.5; // ortho: w=1
+    if (all(greaterThanEqual(lightUV, vec2(0.0))) &&
+        all(lessThanEqual(lightUV, vec2(1.0)))) {
+        float front = texture(shadowMapTex, lightUV).r;
+        if (front > 0.0) {
+            float depthFromLight = -(u_lightView * vec4(worldP, 1.0)).z;
+            shadow = clamp((depthFromLight - front - u_shadowBias) / 0.06, 0.0, 1.0);
+        }
+    }
+    shadow *= u_shadowStrength;
 
     float thickness = texture(thicknessTex, uv).r;
 
@@ -86,6 +109,9 @@ void main() {
 
     float spec = pow(max(dot(N, normalize(lightDir + viewDir)), 0.0), 150.0);
 
-    vec3 color = mix(refracted, sky, fresnel) + spec * vec3(0.6);
+    // Shadow kills the highlight entirely but only dims the body of the
+    // water, which still receives ambient/refracted light
+    vec3 color = mix(refracted, sky, fresnel) * (1.0 - 0.5 * shadow) +
+                 spec * vec3(0.6) * (1.0 - shadow);
     FragColor = vec4(color, 1.0);
 }

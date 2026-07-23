@@ -92,6 +92,26 @@ void setupCubeBuffers(GLuint *cubeVAO, GLuint *cubeVBO, GLuint *cubeEBO) {
   glBindVertexArray(0);
 }
 
+// Unit quad in the XZ plane, scaled/positioned per frame from the box bounds
+void setupFloorBuffers(GLuint *floorVAO, GLuint *floorVBO) {
+  float floorVertices[] = {-0.5f, 0.0f, -0.5f, 0.5f, 0.0f, -0.5f,
+                           -0.5f, 0.0f, 0.5f,  0.5f, 0.0f, 0.5f};
+
+  glGenVertexArrays(1, floorVAO);
+  glGenBuffers(1, floorVBO);
+
+  glBindVertexArray(*floorVAO);
+  glBindBuffer(GL_ARRAY_BUFFER, *floorVBO);
+  glBufferData(GL_ARRAY_BUFFER, sizeof(floorVertices), floorVertices,
+               GL_STATIC_DRAW);
+
+  glVertexAttribPointer(0, 3, GL_FLOAT, GL_FALSE, 3 * sizeof(float),
+                        (void *)0);
+  glEnableVertexAttribArray(0);
+
+  glBindVertexArray(0);
+}
+
 void updateCubeBounds(GLuint cubeVBO) {
   std::vector<glm::vec3> newCubeVertices = {
       glm::vec3(botX, botY, botZ), glm::vec3(topX, botY, botZ),

@@ -25,6 +25,7 @@ glm::vec4 genRandomVector3d();
 void createParticleBuffers(ParticleBuffers *buffers);
 void deleteParticleBuffers(ParticleBuffers *buffers);
 void setupCubeBuffers(GLuint *cubeVAO, GLuint *cubeVBO, GLuint *cubeEBO);
+void setupFloorBuffers(GLuint *floorVAO, GLuint *floorVBO);
 void setupQuadBuffers(GLuint *quadVAO, GLuint *quadVBO, GLuint posBuffer,
                       GLuint velBuffer);
 void updateCubeBounds(GLuint cubeVBO);

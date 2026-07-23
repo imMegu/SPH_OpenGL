@@ -25,15 +25,18 @@ void renderGUI() {
   ImGui::SameLine();
   if (ImGui::Button("Reset"))
     resetRequested = true;
+  if (ImGui::Button(phoneGyro ? "Deactivate PhoneGyro" : "Activate PhoneGyro"))
+    phoneGyro = !phoneGyro;
 
-  static const int particleCounts[] = {16384, 32768, 65536, 131072, 262144};
-  static const char *particleCountLabels[] = {"16384", "32768", "65536",
-                                              "131072", "262144"};
+  static const int particleCounts[] = {16384,  32768,  65536,  131072,
+                                       262144, 524288, 1048576};
+  static const char *particleCountLabels[] = {
+      "16384", "32768", "65536", "131072", "262144", "524288", "1048576"};
   int countIndex = 0;
-  for (int i = 0; i < 5; i++)
+  for (int i = 0; i < 7; i++)
     if (particleCounts[i] == pendingNumParticles)
       countIndex = i;
-  if (ImGui::Combo("Particles", &countIndex, particleCountLabels, 5))
+  if (ImGui::Combo("Particles", &countIndex, particleCountLabels, 7))
     pendingNumParticles = particleCounts[countIndex];
 
   if (ImGui::Checkbox("VSync", &vsyncEnabled))
@@ -60,6 +63,8 @@ void renderGUI() {
   ImGui::Checkbox("Single Axis", &singleAxis);
   ImGui::Checkbox("Water Shading", &waterRendering);
   ImGui::SliderFloat("Absorption", &waterAbsorption, 0.0f, 20.0f);
+  ImGui::Checkbox("Shadows", &shadowsEnabled);
+  ImGui::SliderFloat("Shadow Strength", &shadowStrength, 0.0f, 1.0f);
   ImGui::End();
   ImGui::Render();
   ImGui_ImplOpenGL3_RenderDrawData(ImGui::GetDrawData());

@@ -13,6 +13,9 @@ extern bool resetRequested;
 extern bool vsyncEnabled;
 extern bool waterRendering;
 extern float waterAbsorption;
+extern bool shadowsEnabled;
+extern float shadowStrength;
+extern bool phoneGyro;
 
 void setupGUI(GLFWwindow *window);
 void renderGUI();

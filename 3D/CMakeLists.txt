@@ -15,6 +15,7 @@ find_package(OpenGL REQUIRED)
 find_package(GLEW REQUIRED)
 find_package(glfw3 REQUIRED)
 find_package(glm REQUIRED)
+find_package(CURL REQUIRED)
 
 set(IMGUI_DIR include/imgui-master)
 
@@ -34,12 +35,15 @@ add_executable(execute
     ${IMGUI_DIR}/backends/imgui_impl_opengl3.cpp
 )
 
-# Copy shaders next to the binary at build time; the executable loads them
-# relative to its own location.
-add_custom_command(TARGET execute POST_BUILD
+# Copy shaders next to the binary; the executable loads them relative to its
+# own location. A custom target (rather than a POST_BUILD step) so it runs on
+# every build even when no C++ changed, and can be built alone:
+#   cmake --build build --target shaders 
+add_custom_target(shaders ALL
     COMMAND ${CMAKE_COMMAND} -E copy_directory
             "${CMAKE_SOURCE_DIR}/src/shaders" "${CMAKE_BINARY_DIR}/src/shaders"
 )
+add_dependencies(execute shaders)
 
 # Specify include directories for all headers
 target_include_directories(execute PUBLIC
@@ -55,4 +59,5 @@ target_link_libraries(execute PRIVATE
     ${OPENGL_LIBRARIES}
     GLEW::GLEW
     glm::glm
+    CURL::libcurl
 )

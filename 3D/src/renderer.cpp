@@ -1,10 +1,15 @@
 #include "renderer.h"
 #include "shader.h"
 #include "simulation.h"
+#include <glm/gtc/matrix_transform.hpp>
 #include <iostream>
 
-bool waterRendering = true;
-float waterAbsorption = 5.0f;
+bool waterRendering = false;
+float waterAbsorption = 9.0f;
+bool shadowsEnabled = true;
+float shadowStrength = 0.6f;
+
+extern glm::mat4 boxTransform;
 
 namespace {
 
@@ -12,9 +17,17 @@ namespace {
 // particle diameters so the blur doesn't bleed across silhouettes
 const float DEPTH_FALLOFF = 120.0f;
 
+// World-space direction toward the light; shared by the shadow map, the
+// composite specular and the floor shading so they all agree
+const glm::vec3 LIGHT_DIR = glm::normalize(glm::vec3(0.4f, 0.8f, 0.6f));
+const int SHADOW_RES = 1024;
+
 int fbWidth = 0, fbHeight = 0;
 
 GLuint depthProgram, thicknessProgram, blurProgram, compositeProgram;
+
+GLuint shadowFBO, shadowTex, shadowDepthRB;
+glm::mat4 lightView(1.0f), lightVP(1.0f);
 
 GLuint fsVAO; // empty VAO for fullscreen-triangle passes
 
@@ -31,7 +44,8 @@ struct {
   GLint blurDir, depthFalloff;
 } blurU;
 struct {
-  GLint proj, view, absorption;
+  GLint proj, view, absorption, invView, lightView, lightVP, lightDir,
+      shadowBias, shadowStrength;
 } compositeU;
 
 GLuint createTargetTexture(GLenum internalFormat, int width, int height) {
@@ -104,7 +118,7 @@ void deleteTargets() {
   GLuint fbos[] = {sceneFBO, fluidFBO, blurTmpFBO, fluidSmoothFBO,
                    thicknessFBO};
   glDeleteFramebuffers(5, fbos);
-  GLuint texs[] = {sceneColorTex, sceneDepthTex, fluidDepthTex,
+  GLuint texs[] = {sceneColorTex, sceneDepthTex,  fluidDepthTex,
                    blurTmpTex,    fluidSmoothTex, thicknessTex};
   glDeleteTextures(6, texs);
   glDeleteRenderbuffers(1, &fluidDepthRB);
@@ -148,17 +162,73 @@ void setupWaterRenderer(int width, int height) {
 
   compositeU.proj = glGetUniformLocation(compositeProgram, "u_proj");
   compositeU.view = glGetUniformLocation(compositeProgram, "u_view");
-  compositeU.absorption =
-      glGetUniformLocation(compositeProgram, "absorption");
+  compositeU.absorption = glGetUniformLocation(compositeProgram, "absorption");
+  compositeU.invView = glGetUniformLocation(compositeProgram, "u_invView");
+  compositeU.lightView = glGetUniformLocation(compositeProgram, "u_lightView");
+  compositeU.lightVP = glGetUniformLocation(compositeProgram, "u_lightVP");
+  compositeU.lightDir = glGetUniformLocation(compositeProgram, "u_lightDir");
+  compositeU.shadowBias =
+      glGetUniformLocation(compositeProgram, "u_shadowBias");
+  compositeU.shadowStrength =
+      glGetUniformLocation(compositeProgram, "u_shadowStrength");
   glUseProgram(compositeProgram);
   glUniform1i(glGetUniformLocation(compositeProgram, "fluidDepthTex"), 0);
   glUniform1i(glGetUniformLocation(compositeProgram, "thicknessTex"), 1);
   glUniform1i(glGetUniformLocation(compositeProgram, "sceneColorTex"), 2);
   glUniform1i(glGetUniformLocation(compositeProgram, "sceneDepthTex"), 3);
+  glUniform1i(glGetUniformLocation(compositeProgram, "shadowMapTex"), 4);
+
+  // Light-space fluid depth, fixed resolution (independent of window resizes).
+  // NEAREST: the shaders compare depths per tap, interpolating across the
+  // 0 = "no fluid" sentinel would produce bogus values at silhouettes.
+  shadowTex = createTargetTexture(GL_R32F, SHADOW_RES, SHADOW_RES);
+  glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_NEAREST);
+  glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_NEAREST);
+  shadowFBO = createColorFBO(shadowTex);
+  glGenRenderbuffers(1, &shadowDepthRB);
+  glBindRenderbuffer(GL_RENDERBUFFER, shadowDepthRB);
+  glRenderbufferStorage(GL_RENDERBUFFER, GL_DEPTH_COMPONENT24, SHADOW_RES,
+                        SHADOW_RES);
+  glBindFramebuffer(GL_FRAMEBUFFER, shadowFBO);
+  glFramebufferRenderbuffer(GL_FRAMEBUFFER, GL_DEPTH_ATTACHMENT,
+                            GL_RENDERBUFFER, shadowDepthRB);
+  glBindFramebuffer(GL_FRAMEBUFFER, 0);
 
   glGenVertexArrays(1, &fsVAO);
   createTargets(width, height);
 }
+
+void renderShadowMap(GLuint particleVAO, float sphereRadiusWorld) {
+  glBindFramebuffer(GL_FRAMEBUFFER, shadowFBO);
+  glViewport(0, 0, SHADOW_RES, SHADOW_RES);
+  float zero[4] = {0, 0, 0, 0};
+  glClearBufferfv(GL_COLOR, 0, zero);
+  glClear(GL_DEPTH_BUFFER_BIT);
+  if (!shadowsEnabled || shadowStrength <= 0.0f)
+    return; // empty map reads as "no fluid", i.e. fully lit
+
+  // Fit the ortho frustum around the (possibly rotated/resized) box; the
+  // particles are clamped inside it
+  glm::vec3 center = glm::vec3(
+      boxTransform * glm::vec4(0.5f * (botX + topX), 0.5f * (botY + topY),
+                               0.5f * (botZ + topZ), 1.0f));
+  float radius =
+      0.5f * glm::length(glm::vec3(topX - botX, topY - botY, topZ - botZ)) +
+      4.0f * sphereRadiusWorld;
+  lightView =
+      glm::lookAt(center + LIGHT_DIR * 2.0f * radius, center, glm::vec3(0, 1, 0));
+  glm::mat4 lightProj =
+      glm::ortho(-radius, radius, -radius, radius, 0.5f * radius, 3.5f * radius);
+  lightVP = lightProj * lightView;
+
+  glEnable(GL_DEPTH_TEST);
+  drawParticles(particleVAO, depthProgram, lightProj, lightView,
+                sphereRadiusWorld, depthU);
+}
+
+GLuint shadowMapTexture() { return shadowTex; }
+const glm::mat4 &lightViewMatrix() { return lightView; }
+const glm::mat4 &lightViewProjMatrix() { return lightVP; }
 
 void resizeWaterRenderer(int width, int height) {
   if (width == fbWidth && height == fbHeight)
@@ -170,7 +240,8 @@ void resizeWaterRenderer(int width, int height) {
 void beginScenePass() {
   glBindFramebuffer(GL_FRAMEBUFFER, sceneFBO);
   glViewport(0, 0, fbWidth, fbHeight);
-  glClearColor(0.173, 0.173, 0.173, 1.0f);
+  // glClearColor(0.173, 0.173, 0.173, 1.0f);
+  glClearColor(0.5, 0.44, 0.5, 1.0f);
   glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
   glEnable(GL_DEPTH_TEST);
 }
@@ -220,6 +291,17 @@ void renderWater(GLuint particleVAO, const glm::mat4 &proj,
   glUniformMatrix4fv(compositeU.proj, 1, GL_FALSE, &proj[0][0]);
   glUniformMatrix4fv(compositeU.view, 1, GL_FALSE, &view[0][0]);
   glUniform1f(compositeU.absorption, waterAbsorption);
+  glm::mat4 invView = glm::inverse(view);
+  glm::vec3 lightDirView = glm::normalize(glm::mat3(view) * LIGHT_DIR);
+  glUniformMatrix4fv(compositeU.invView, 1, GL_FALSE, &invView[0][0]);
+  glUniformMatrix4fv(compositeU.lightView, 1, GL_FALSE, &lightView[0][0]);
+  glUniformMatrix4fv(compositeU.lightVP, 1, GL_FALSE, &lightVP[0][0]);
+  glUniform3fv(compositeU.lightDir, 1, &lightDirView[0]);
+  glUniform1f(compositeU.shadowBias, 3.0f * sphereRadiusWorld);
+  glUniform1f(compositeU.shadowStrength,
+              shadowsEnabled ? shadowStrength : 0.0f);
+  glActiveTexture(GL_TEXTURE4);
+  glBindTexture(GL_TEXTURE_2D, shadowTex);
   glActiveTexture(GL_TEXTURE0);
   glBindTexture(GL_TEXTURE_2D, fluidSmoothTex);
   glActiveTexture(GL_TEXTURE1);
@@ -235,6 +317,9 @@ void renderWater(GLuint particleVAO, const glm::mat4 &proj,
 
 void shutdownWaterRenderer() {
   deleteTargets();
+  glDeleteFramebuffers(1, &shadowFBO);
+  glDeleteTextures(1, &shadowTex);
+  glDeleteRenderbuffers(1, &shadowDepthRB);
   glDeleteVertexArrays(1, &fsVAO);
   glDeleteProgram(depthProgram);
   glDeleteProgram(thicknessProgram);

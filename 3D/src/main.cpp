@@ -13,6 +13,7 @@
 #include "renderer.h"
 #include "shader.h"
 #include "simulation.h"
+#include "src/gyro_source.h"
 #include "utilities.h"
 
 float angle;
@@ -37,13 +38,14 @@ bool spacePressed = false;
 bool cameraMode = false;
 double frameTime = 0.0;
 bool running = true;
+bool phoneGyro = false;
 bool resetRequested = false;
 bool vsyncEnabled = false;
 float sphereRadius = 3.5f;
-float targetDensity = 3.0f;
-float pressureStrength = 20.5f;
-float nearPressureStrength = 0.1f;
-float viscosityStrength = 0.7f;
+float targetDensity = 3.75f;
+float pressureStrength = 27.0f;
+float nearPressureStrength = 0.022f;
+float viscosityStrength = 0.03f;
 float gravity = 9.8f;
 float boundSpeed = 1.0f;
 
@@ -60,6 +62,9 @@ ParticleBuffers particleBuffers;
 GLuint cubeProgram;
 GLuint cubeVAO, cubeVBO, cubeEBO;
 GLuint quadVAO, quadVBO;
+// Checkered floor below the box
+GLuint floorProgram;
+GLuint floorVAO, floorVBO;
 
 // Function Prototypes - Implementations moved to their respective files
 void processInput(GLFWwindow *window);
@@ -133,6 +138,7 @@ int main() {
   // Shader Compilation
   renderProgram = createRenderProgram(vertexShaderSource, fragmentShaderSource);
   cubeProgram = createLineProgram(cubeVertexSource, cubeFragmentSource);
+  floorProgram = createRenderProgram(floorVertexSource, floorFragmentSource);
   setupComputeShaders();
 
   // Uniform locations, fetched once
@@ -142,22 +148,49 @@ int main() {
   GLint locCubeModel = glGetUniformLocation(cubeProgram, "u_model");
   GLint locCubeProj = glGetUniformLocation(cubeProgram, "u_proj");
   GLint locCubeView = glGetUniformLocation(cubeProgram, "u_view");
+  GLint locFloorModel = glGetUniformLocation(floorProgram, "u_model");
+  GLint locFloorProj = glGetUniformLocation(floorProgram, "u_proj");
+  GLint locFloorView = glGetUniformLocation(floorProgram, "u_view");
+  GLint locFloorCenter = glGetUniformLocation(floorProgram, "u_floorCenter");
+  GLint locFloorLightView = glGetUniformLocation(floorProgram, "u_lightView");
+  GLint locFloorLightVP = glGetUniformLocation(floorProgram, "u_lightVP");
+  GLint locFloorShadowStrength =
+      glGetUniformLocation(floorProgram, "u_shadowStrength");
+  glUseProgram(floorProgram);
+  glUniform1f(glGetUniformLocation(floorProgram, "u_tileScale"), 8.0f);
+  glUniform1f(glGetUniformLocation(floorProgram, "u_tileDarkOffset"), -0.07f);
+  glUniform1f(glGetUniformLocation(floorProgram, "u_tileColVariation"), 0.2f);
+  glUniform1i(glGetUniformLocation(floorProgram, "u_shadowMap"), 1);
 
   // Buffer Creation
   createParticleBuffers(&particleBuffers);
 
   setupCubeBuffers(&cubeVAO, &cubeVBO, &cubeEBO);
+  setupFloorBuffers(&floorVAO, &floorVBO);
   setupQuadBuffers(&quadVAO, &quadVBO, particleBuffers.positions,
                    particleBuffers.velocities);
 
   setupWaterRenderer(scrWidth, scrHeight);
   setupGUI(window);
 
+  GyroSource gyro("10.233.149.135", "8080");
+  gyro.start();
+
   double currentTime = glfwGetTime();
   while (!glfwWindowShouldClose(window)) {
     double newTime = glfwGetTime();
     frameTime = newTime - currentTime;
     currentTime = newTime;
+
+    if (phoneGyro) {
+      float dPitch, dYaw, dRoll;
+      gyro.consume(dPitch, dYaw, dRoll); // radians accumulated since last frame
+
+      camera.Yaw += glm::degrees(dYaw);
+      camera.Pitch += glm::degrees(dPitch);
+      camera.Pitch = glm::clamp(camera.Pitch, -89.0f, 89.0f);
+      camera.updateCameraVectors();
+    }
 
     processInput(window);
 
@@ -180,28 +213,63 @@ int main() {
     glm::mat4 View = camera.GetViewMatrix();
 
     auto drawCube = [&]() {
+      glEnable(GL_BLEND);
+      glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
       glUseProgram(cubeProgram);
       glUniformMatrix4fv(locCubeModel, 1, GL_FALSE, &boxTransform[0][0]);
       glUniformMatrix4fv(locCubeProj, 1, GL_FALSE, &Projection[0][0]);
       glUniformMatrix4fv(locCubeView, 1, GL_FALSE, &View[0][0]);
       glBindVertexArray(cubeVAO);
       glDrawElements(GL_LINES, 24, GL_UNSIGNED_INT, 0);
+      glDisable(GL_BLEND);
+    };
+
+    auto drawFloor = [&]() {
+      glm::vec2 center(0.5f * (botX + topX), 0.5f * (botZ + topZ));
+      // Slightly below botY to avoid z-fighting with the cube's bottom edges
+      glm::mat4 model =
+          glm::translate(glm::mat4(1.0f),
+                         glm::vec3(center.x, botY - 0.001f, center.y)) *
+          glm::scale(glm::mat4(1.0f), glm::vec3(3.0f, 1.0f, 3.0f));
+      glUseProgram(floorProgram);
+      glUniformMatrix4fv(locFloorModel, 1, GL_FALSE, &model[0][0]);
+      glUniformMatrix4fv(locFloorProj, 1, GL_FALSE, &Projection[0][0]);
+      glUniformMatrix4fv(locFloorView, 1, GL_FALSE, &View[0][0]);
+      glUniform2f(locFloorCenter, center.x, center.y);
+      glUniformMatrix4fv(locFloorLightView, 1, GL_FALSE,
+                         &lightViewMatrix()[0][0]);
+      glUniformMatrix4fv(locFloorLightVP, 1, GL_FALSE,
+                         &lightViewProjMatrix()[0][0]);
+      glUniform1f(locFloorShadowStrength,
+                  shadowsEnabled ? shadowStrength : 0.0f);
+      glActiveTexture(GL_TEXTURE1);
+      glBindTexture(GL_TEXTURE_2D, shadowMapTexture());
+      glActiveTexture(GL_TEXTURE0);
+      glBindVertexArray(floorVAO);
+      glDrawArrays(GL_TRIANGLE_STRIP, 0, 4);
     };
 
     resizeWaterRenderer(scrWidth, scrHeight);
+    // Fluid shadow map, sampled by the floor (and the water composite) in
+    // both render modes
+    renderShadowMap(quadVAO, sphereRadius / 1000);
     if (waterRendering) {
       // Background + cube go to the offscreen scene target; the water passes
       // then composite everything to the default framebuffer
       beginScenePass();
+      drawFloor();
       drawCube();
       renderWater(quadVAO, Projection, View, sphereRadius / 1000);
     } else {
       // Plain sphere-impostor view
       glBindFramebuffer(GL_FRAMEBUFFER, 0);
       glViewport(0, 0, scrWidth, scrHeight);
-      glClearColor(0.173, 0.173, 0.173, 1.0f);
+      // glClearColor(0.173, 0.173, 0.173, 1.0f);
+      glClearColor(0.5, 0.44, 0.5, 1.0f);
       glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
       glEnable(GL_DEPTH_TEST);
+
+      drawFloor();
 
       glUseProgram(renderProgram);
       glUniformMatrix4fv(locProj, 1, GL_FALSE, &Projection[0][0]);
@@ -230,8 +298,11 @@ int main() {
   glDeleteVertexArrays(1, &cubeVAO);
   glDeleteBuffers(1, &cubeVBO);
   glDeleteBuffers(1, &cubeEBO);
+  glDeleteVertexArrays(1, &floorVAO);
+  glDeleteBuffers(1, &floorVBO);
   glDeleteProgram(renderProgram);
   glDeleteProgram(cubeProgram);
+  glDeleteProgram(floorProgram);
   glfwTerminate();
 
   return 0;
